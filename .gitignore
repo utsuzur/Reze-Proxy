@@ -11,6 +11,16 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+
+# Database
+*.db
+*.db-journal
+
+# Gemini
+.gemini/
 
 # Editor directories and files
 .vscode/*
