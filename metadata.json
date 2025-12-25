@@ -1,0 +1,5 @@
+{
+  "name": "Reze Proxy",
+  "description": "A simplistic and professional dashboard for managing an OpenAI-compatible reverse proxy, featuring model management and token generation.",
+  "requestFramePermissions": []
+}
