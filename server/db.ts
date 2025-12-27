@@ -12,6 +12,8 @@ const db = new verbose.Database(dbPath, (err) => {
 
 db.serialize(() => {
   db.run("PRAGMA foreign_keys = ON;"); // Enable foreign key constraints
+  db.run("PRAGMA journal_mode = WAL;"); // Enable Write-Ahead Logging for better concurrency
+  db.run("PRAGMA synchronous = NORMAL;"); // Faster writes with reasonable safety
   initializeTables();
 });
 
@@ -72,6 +74,19 @@ function initializeTables() {
       }
     });
   });
+
+  db.run(`CREATE TABLE IF NOT EXISTS request_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tokenId TEXT NOT NULL,
+    modelId TEXT NOT NULL,
+    inputTokens INTEGER DEFAULT 0,
+    outputTokens INTEGER DEFAULT 0,
+    timestamp TEXT NOT NULL,
+    FOREIGN KEY(tokenId) REFERENCES tokens(id) ON DELETE CASCADE
+  )`);
+
+  db.run("CREATE INDEX IF NOT EXISTS idx_request_logs_tokenId ON request_logs(tokenId)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp)");
 }
 
 export default db;

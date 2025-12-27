@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { ModelConfig, Provider } from '../types';
 import { storageService } from '../services/storageService';
-import { Cpu, Zap, Box } from 'lucide-react';
+import { Cpu, Zap, Box, Key } from 'lucide-react';
+import { TokenChecker } from '../components/TokenChecker';
 
 const Home: React.FC = () => {
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
+  const [isTokenCheckerOpen, setIsTokenCheckerOpen] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -20,6 +22,8 @@ const Home: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-reze-50 via-white to-purple-50 flex flex-col">
+      <TokenChecker isOpen={isTokenCheckerOpen} onClose={() => setIsTokenCheckerOpen(false)} />
+      
       {/* Hero Section */}
       <header className="pt-24 pb-16 px-6 text-center">
         <div className="max-w-4xl mx-auto space-y-6">
@@ -32,6 +36,17 @@ const Home: React.FC = () => {
           <p className="text-xl md:text-2xl text-slate-500 font-light italic">
             "Let's run away together"
           </p>
+          
+          <div className="flex justify-center gap-4 pt-4">
+            <button 
+              onClick={() => setIsTokenCheckerOpen(true)}
+              className="inline-flex items-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-700 rounded-xl hover:border-reze-300 hover:text-reze-600 hover:shadow-md transition-all font-medium"
+            >
+              <Key className="w-4 h-4" />
+              Check User Token
+            </button>
+          </div>
+
           <div className="h-1 w-24 bg-reze-400 mx-auto rounded-full mt-8 opacity-50"></div>
         </div>
       </header>

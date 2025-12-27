@@ -164,6 +164,66 @@ app.delete('/api/tokens/:id', (req, res) => {
   });
 });
 
+// --- User Token Self-Service ---
+app.delete('/api/logs/prune', (req, res) => {
+    // Delete logs older than 30 days
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const timestamp = thirtyDaysAgo.toISOString();
+
+    db.run('DELETE FROM request_logs WHERE timestamp < ?', [timestamp], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ deleted: this.changes, message: `Pruned logs older than ${timestamp}` });
+    });
+});
+
+app.post('/api/my-token/details', (req, res) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: "Token is required" });
+
+    db.get('SELECT * FROM tokens WHERE token = ?', [token], (err, row: any) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: "Invalid token" });
+
+        // Get recent logs
+        db.all('SELECT * FROM request_logs WHERE tokenId = ? ORDER BY timestamp DESC LIMIT 50', [row.id], (err, logs) => {
+            if (err) return res.status(500).json({ error: err.message });
+            
+            // Calculate remaining RPD
+            const now = new Date();
+            const todayStr = now.toISOString().split('T')[0];
+            const remainingRequestsToday = (row.maxRequestsPerDay && row.maxRequestsPerDay > 0) 
+                ? Math.max(0, row.maxRequestsPerDay - (row.lastRequestDate === todayStr ? row.requestsToday : 0))
+                : null; // Null means unlimited
+
+             // Get stats for graph (last 7 days maybe? or just return logs and let frontend handle it)
+             // For now, returning raw logs is fine as requested "logging info (last 50 requests)"
+            
+            res.json({
+                ...row,
+                isActive: !!row.isActive,
+                remainingRequestsToday,
+                logs
+            });
+        });
+    });
+});
+
+app.put('/api/my-token/name', (req, res) => {
+    const { token, name } = req.body;
+    if (!token || !name) return res.status(400).json({ error: "Token and name are required" });
+
+    db.get('SELECT id FROM tokens WHERE token = ?', [token], (err, row: any) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: "Invalid token" });
+
+        db.run('UPDATE tokens SET name = ? WHERE id = ?', [name, row.id], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true, name });
+        });
+    });
+});
+
 // --- Shrine Status ---
 app.get('/api/status', (req, res) => {
   res.json({
@@ -380,6 +440,9 @@ app.post('/v1/chat/completions', async (req, res) => {
                     
                     db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', 
                         [inputTokens, outputTokens, row.id]);
+
+                    db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)',
+                        [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
                 }
             } else {
                 res.end();
@@ -412,6 +475,9 @@ app.post('/v1/chat/completions', async (req, res) => {
         // Update Usage
         db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', 
           [inputTokens, outputTokens, row.id]);
+
+        db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)',
+            [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
 
         // Return Response
         res.json(data);
