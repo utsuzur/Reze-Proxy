@@ -255,6 +255,19 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
+import NodeCache from 'node-cache';
+
+const tokenCache = new NodeCache({ stdTTL: 60 }); // Cache tokens for 60 seconds
+const modelCache = new NodeCache({ stdTTL: 300 }); // Cache model configs for 5 minutes
+
+// Helper to promisify db.get
+const dbGet = (sql: string, params: any[]) => new Promise<any>((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+    });
+});
+
 app.post('/v1/chat/completions', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -262,15 +275,20 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
   const token = authHeader.split(' ')[1];
 
-      // Validate Token
-    db.get('SELECT * FROM tokens WHERE token = ?', [token], async (err, row: any) => {
-      if (err) return res.status(500).json({ error: { message: "Internal server error" } });
+  try {
+      // 1. Get Token (Cache -> DB)
+      let row: any = tokenCache.get(token);
+      if (!row) {
+          row = await dbGet('SELECT * FROM tokens WHERE token = ?', [token]);
+          if (row) tokenCache.set(token, row);
+      }
+      
       if (!row) return res.status(401).json({ error: { message: "Invalid API key" } });
   
       // Check if Token is Active
-    if (row.isActive === 0) {
-      return res.status(401).json({ error: { message: "API key disabled" } });
-    }
+      if (row.isActive === 0) {
+        return res.status(401).json({ error: { message: "API key disabled" } });
+      }
 
     // Check Expiry
     if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
@@ -296,7 +314,29 @@ app.post('/v1/chat/completions', async (req, res) => {
          }
     }
 
-    // Update Rate Limit Counters
+    // Update Rate Limit Counters (Async - don't block response)
+    // We also update the cache to reflect the new counts immediately if we were using it for state, 
+    // but here we just fire-and-forget the DB update. Ideally, a distributed cache (Redis) would handle increments.
+    // For now, local cache might get stale regarding EXACT counts, but that's a trade-off for speed.
+    // To ensure strict limits, we might want to invalidate the cache on hit, but that defeats the purpose.
+    // We'll proceed with DB updates and just accept that the cached 'row' might lag slightly on counters 
+    // within the 60s window. *However*, for strict rate limiting, we should probably fetch the latest counters 
+    // or store counters separately. For this simple implementation, we'll stick to the cached row 
+    // but invalidating it might be safer if we want strict enforcement.
+    // IMPROVEMENT: Let's invalidate the token cache on every request so the next request fetches fresh counters.
+    // This keeps auth fast (if we split it) but here counters are on the same row.
+    // Optimization: Only invalidate if we are close to a limit? 
+    // Let's simple invalidate for now to be safe with limits, OR just update the in-memory object too.
+    
+    // Increment in-memory to reflect immediate change (optimistic)
+    if (row.lastRequestDate !== todayStr) { row.requestsToday = 1; row.lastRequestDate = todayStr; }
+    else { row.requestsToday = (row.requestsToday || 0) + 1; }
+    
+    if (row.lastRequestMinute !== currentMinuteStr) { row.requestsThisMinute = 1; row.lastRequestMinute = currentMinuteStr; }
+    else { row.requestsThisMinute = (row.requestsThisMinute || 0) + 1; }
+    
+    tokenCache.set(token, row); // Update cache with new counters
+
     db.run(`UPDATE tokens SET 
         requestsToday = CASE WHEN lastRequestDate = ? THEN requestsToday + 1 ELSE 1 END,
         lastRequestDate = ?,
@@ -308,9 +348,13 @@ app.post('/v1/chat/completions', async (req, res) => {
     const modelId = req.body.model;
     if (!modelId) return res.status(400).json({ error: { message: "Model is required" } });
 
-    // Find Provider & Model FIRST to resolve Public Name -> Internal ID
-    db.get('SELECT m.*, p.baseUrl, p.apiKey as providerKey FROM models m JOIN providers p ON m.providerId = p.id WHERE m.name = ? AND m.isActive = 1 LIMIT 1', [modelId], async (err, modelRow: any) => {
-      if (err) return res.status(500).json({ error: { message: "Database error" } });
+    // 2. Get Model (Cache -> DB)
+    let modelRow: any = modelCache.get(modelId);
+    if (!modelRow) {
+        modelRow = await dbGet('SELECT m.*, p.baseUrl, p.apiKey as providerKey FROM models m JOIN providers p ON m.providerId = p.id WHERE m.name = ? AND m.isActive = 1 LIMIT 1', [modelId]);
+        if (modelRow) modelCache.set(modelId, modelRow);
+    }
+
       if (!modelRow) return res.status(404).json({ error: { message: "Unknown Model Name" } });
 
       // Check Access using the Internal ID (modelRow.id)
@@ -486,8 +530,10 @@ app.post('/v1/chat/completions', async (req, res) => {
         console.error("Proxy error:", e);
         res.status(502).json({ error: { message: "Bad Gateway: Failed to connect to provider" } });
       }
-    });
-  });
+  } catch (err: any) {
+      console.error("Server Error:", err);
+      res.status(500).json({ error: { message: "Internal server error" } });
+  }
 });
 
 // --- Static Frontend Serving ---
