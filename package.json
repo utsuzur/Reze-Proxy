@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"nodemon --exec ts-node --esm server/index.ts\"",
+    "dev": "concurrently \"vite\" \"PORT=3001 nodemon --exec ts-node --esm server/index.ts\"",
     "build": "vite build",
     "preview": "vite preview",
     "server": "nodemon --exec ts-node --esm server/index.ts"

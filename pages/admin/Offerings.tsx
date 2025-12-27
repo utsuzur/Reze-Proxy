@@ -1,14 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, RefreshCw, Save, X, Globe, Check, Edit2 } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Save, X, Globe, Check, Edit2, ChevronDown } from 'lucide-react';
 import { Provider, ModelConfig } from '../../types';
 import { storageService } from '../../services/storageService';
+
+const PRESETS = [
+  { name: 'OpenAI', url: 'https://api.openai.com/v1' },
+  { name: 'Groq', url: 'https://api.groq.com/openai/v1' },
+  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
+  { name: 'DeepSeek', url: 'https://api.deepseek.com' },
+  { name: 'Mistral AI', url: 'https://api.mistral.ai/v1' },
+  { name: 'Together AI', url: 'https://api.together.xyz/v1' },
+  { name: 'Ollama (Local)', url: 'http://localhost:11434/v1' },
+];
 
 const Offerings: React.FC = () => {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [isAdding, setIsAdding] = useState(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   
   // Provider Form State
   const [newProviderName, setNewProviderName] = useState('');
@@ -23,8 +33,21 @@ const Offerings: React.FC = () => {
   }, []);
 
   const refreshData = async () => {
-    setProviders(await storageService.getProviders());
+    const loadedProviders = await storageService.getProviders();
+    setProviders(loadedProviders);
     setModels(await storageService.getModels());
+    // Default all to expanded initially
+    setExpandedProviders(new Set(loadedProviders.map(p => p.id)));
+  };
+
+  const toggleProvider = (id: string) => {
+    const newSet = new Set(expandedProviders);
+    if (newSet.has(id)) {
+        newSet.delete(id);
+    } else {
+        newSet.add(id);
+    }
+    setExpandedProviders(newSet);
   };
 
   const handleFetchModels = async () => {
@@ -120,6 +143,9 @@ const Offerings: React.FC = () => {
 
         await storageService.saveProvider(provider);
         await storageService.saveModels(newModelConfigs);
+        
+        // Auto expand new provider
+        setExpandedProviders(prev => new Set(prev).add(newId));
     }
     
     refreshData();
@@ -177,11 +203,36 @@ const Offerings: React.FC = () => {
       {/* Add/Edit Provider Modal/Panel */}
       {isAdding && (
         <div className="mb-8 bg-white p-6 rounded-xl shadow-lg border border-reze-100 animate-in fade-in slide-in-from-top-4">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex justify-between items-center mb-4 border-b border-slate-50 pb-4">
             <h3 className="text-lg font-semibold text-slate-800">{editingProviderId ? 'Edit Provider' : 'New Provider Configuration'}</h3>
             <button onClick={resetForm} className="text-slate-400 hover:text-slate-600">
                 <X className="w-5 h-5" />
             </button>
+          </div>
+          
+          <div className="mb-6 p-4 bg-slate-50 rounded-lg border border-slate-100">
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                Fast Configuration
+            </label>
+            <div className="flex flex-col gap-2">
+                <p className="text-xs text-slate-400 mb-1">Select a provider to auto-fill the URL:</p>
+                <select 
+                    onChange={(e) => {
+                        const preset = PRESETS.find(p => p.url === e.target.value);
+                        if (preset) {
+                            setNewProviderName(preset.name);
+                            setNewProviderUrl(preset.url);
+                        }
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700 focus:ring-2 focus:ring-reze-500 outline-none shadow-sm"
+                    defaultValue=""
+                >
+                    <option value="" disabled>-- Choose a Provider Preset --</option>
+                    {PRESETS.map(p => (
+                        <option key={p.url} value={p.url}>{p.name}</option>
+                    ))}
+                </select>
+            </div>
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -258,8 +309,14 @@ const Offerings: React.FC = () => {
       <div className="space-y-6">
         {providers.map(provider => (
             <div key={provider.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                <div className="bg-slate-50 px-4 py-4 md:px-6 border-b border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div 
+                  className="bg-slate-50 px-4 py-4 md:px-6 border-b border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 cursor-pointer hover:bg-slate-100 transition-colors"
+                  onClick={() => toggleProvider(provider.id)}
+                >
                     <div className="flex items-center gap-3">
+                        <div className={`transition-transform duration-200 ${expandedProviders.has(provider.id) ? 'rotate-180' : ''}`}>
+                            <ChevronDown className="w-5 h-5 text-slate-400" />
+                        </div>
                         <div className="p-2 bg-white rounded-lg border border-slate-200">
                             <Globe className="w-5 h-5 text-reze-500" />
                         </div>
@@ -268,7 +325,7 @@ const Offerings: React.FC = () => {
                             <p className="text-xs text-slate-500 font-mono truncate max-w-[200px] md:max-w-md">{provider.baseUrl}</p>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2 self-end md:self-auto">
+                    <div className="flex items-center gap-2 self-end md:self-auto" onClick={(e) => e.stopPropagation()}>
                         <button 
                             onClick={() => handleEditProvider(provider)}
                             className="p-2 text-slate-400 hover:text-reze-600 transition-colors"
@@ -286,110 +343,112 @@ const Offerings: React.FC = () => {
                     </div>
                 </div>
                 
-                <div className="p-4 md:p-6">
-                    <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Configured Models</h4>
-                    
-                    {/* Mobile Model List */}
-                    <div className="md:hidden space-y-4">
-                        {models.filter(m => m.providerId === provider.id).map(model => (
-                            <div key={model.id} className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-3">
-                                <div>
-                                    <label className="text-xs font-medium text-slate-500 block mb-1">Public Name</label>
-                                    <input 
-                                        type="text"
-                                        className="w-full px-2 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm focus:ring-1 focus:ring-reze-500 outline-none"
-                                        value={model.name}
-                                        onChange={(e) => handleUpdateModel(model, { name: e.target.value })}
-                                    />
-                                    <div className="text-[10px] text-slate-400 font-mono mt-1 truncate">ID: {model.id}</div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <div>
-                                        <label className="text-[10px] text-slate-500 block mb-1">Max Input</label>
-                                        <input 
-                                            type="number"
-                                            className="w-full px-2 py-1 border border-slate-200 rounded text-slate-600 text-xs focus:ring-1 focus:ring-reze-500 outline-none"
-                                            value={model.maxInputTokens}
-                                            onChange={(e) => handleUpdateModel(model, { maxInputTokens: parseInt(e.target.value) })}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="text-[10px] text-slate-500 block mb-1">Max Output</label>
-                                        <input 
-                                            type="number"
-                                            className="w-full px-2 py-1 border border-slate-200 rounded text-slate-600 text-xs focus:ring-1 focus:ring-reze-500 outline-none"
-                                            value={model.maxOutputTokens}
-                                            onChange={(e) => handleUpdateModel(model, { maxOutputTokens: parseInt(e.target.value) })}
-                                        />
-                                    </div>
-                                </div>
-                                <div className="flex justify-end">
-                                    <button 
-                                        onClick={() => handleUpdateModel(model, { isActive: !model.isActive })}
-                                        className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${model.isActive ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'}`}
-                                    >
-                                        {model.isActive ? 'Active' : 'Disabled'}
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+                {expandedProviders.has(provider.id) && (
+                  <div className="p-4 md:p-6 animate-in slide-in-from-top-2 fade-in duration-200">
+                      <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Configured Models</h4>
+                      
+                      {/* Mobile Model List */}
+                      <div className="md:hidden space-y-4">
+                          {models.filter(m => m.providerId === provider.id).map(model => (
+                              <div key={model.id} className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-3">
+                                  <div>
+                                      <label className="text-xs font-medium text-slate-500 block mb-1">Public Name</label>
+                                      <input 
+                                          type="text"
+                                          className="w-full px-2 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm focus:ring-1 focus:ring-reze-500 outline-none"
+                                          value={model.name}
+                                          onChange={(e) => handleUpdateModel(model, { name: e.target.value })}
+                                      />
+                                      <div className="text-[10px] text-slate-400 font-mono mt-1 truncate">ID: {model.id}</div>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2">
+                                      <div>
+                                          <label className="text-[10px] text-slate-500 block mb-1">Max Input</label>
+                                          <input 
+                                              type="number"
+                                              className="w-full px-2 py-1 border border-slate-200 rounded text-slate-600 text-xs focus:ring-1 focus:ring-reze-500 outline-none"
+                                              value={model.maxInputTokens}
+                                              onChange={(e) => handleUpdateModel(model, { maxInputTokens: parseInt(e.target.value) })}
+                                          />
+                                      </div>
+                                      <div>
+                                          <label className="text-[10px] text-slate-500 block mb-1">Max Output</label>
+                                          <input 
+                                              type="number"
+                                              className="w-full px-2 py-1 border border-slate-200 rounded text-slate-600 text-xs focus:ring-1 focus:ring-reze-500 outline-none"
+                                              value={model.maxOutputTokens}
+                                              onChange={(e) => handleUpdateModel(model, { maxOutputTokens: parseInt(e.target.value) })}
+                                          />
+                                      </div>
+                                  </div>
+                                  <div className="flex justify-end">
+                                      <button 
+                                          onClick={() => handleUpdateModel(model, { isActive: !model.isActive })}
+                                          className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${model.isActive ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'}`}
+                                      >
+                                          {model.isActive ? 'Active' : 'Disabled'}
+                                      </button>
+                                  </div>
+                              </div>
+                          ))}
+                      </div>
 
-                    {/* Desktop Model Table */}
-                    <div className="hidden md:block overflow-x-auto">
-                        <table className="w-full text-sm text-left">
-                            <thead className="text-xs text-slate-500 bg-slate-50/50 uppercase">
-                                <tr>
-                                    <th className="px-4 py-3 rounded-l-lg w-1/3">Model ID</th>
-                                    <th className="px-4 py-3 w-1/6">Max Input</th>
-                                    <th className="px-4 py-3 w-1/6">Max Output</th>
-                                    <th className="px-4 py-3 rounded-r-lg text-right w-1/6">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {models.filter(m => m.providerId === provider.id).map(model => (
-                                    <tr key={model.id} className="hover:bg-slate-50/50">
-                                        <td className="px-4 py-3">
-                                            <input 
-                                                type="text"
-                                                className="w-full px-2 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm focus:ring-1 focus:ring-reze-500 outline-none"
-                                                value={model.name}
-                                                onChange={(e) => handleUpdateModel(model, { name: e.target.value })}
-                                            />
-                                            <div className="text-xs text-slate-400 font-mono mt-1" title="Provider Model ID">
-                                                ID: {model.id}
-                                            </div>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <input 
-                                                type="number"
-                                                className="w-full px-2 py-1 border border-slate-200 rounded text-slate-600 text-xs focus:ring-1 focus:ring-reze-500 outline-none"
-                                                value={model.maxInputTokens}
-                                                onChange={(e) => handleUpdateModel(model, { maxInputTokens: parseInt(e.target.value) })}
-                                            />
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <input 
-                                                type="number"
-                                                className="w-full px-2 py-1 border border-slate-200 rounded text-slate-600 text-xs focus:ring-1 focus:ring-reze-500 outline-none"
-                                                value={model.maxOutputTokens}
-                                                onChange={(e) => handleUpdateModel(model, { maxOutputTokens: parseInt(e.target.value) })}
-                                            />
-                                        </td>
-                                        <td className="px-4 py-3 text-right">
-                                            <button 
-                                                onClick={() => handleUpdateModel(model, { isActive: !model.isActive })}
-                                                className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${model.isActive ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}
-                                            >
-                                                {model.isActive ? 'Active' : 'Disabled'}
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                      {/* Desktop Model Table */}
+                      <div className="hidden md:block overflow-x-auto">
+                          <table className="w-full text-sm text-left">
+                              <thead className="text-xs text-slate-500 bg-slate-50/50 uppercase">
+                                  <tr>
+                                      <th className="px-4 py-3 rounded-l-lg w-1/3">Model ID</th>
+                                      <th className="px-4 py-3 w-1/6">Max Input</th>
+                                      <th className="px-4 py-3 w-1/6">Max Output</th>
+                                      <th className="px-4 py-3 rounded-r-lg text-right w-1/6">Status</th>
+                                  </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                  {models.filter(m => m.providerId === provider.id).map(model => (
+                                      <tr key={model.id} className="hover:bg-slate-50/50">
+                                          <td className="px-4 py-3">
+                                              <input 
+                                                  type="text"
+                                                  className="w-full px-2 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm focus:ring-1 focus:ring-reze-500 outline-none"
+                                                  value={model.name}
+                                                  onChange={(e) => handleUpdateModel(model, { name: e.target.value })}
+                                              />
+                                              <div className="text-xs text-slate-400 font-mono mt-1" title="Provider Model ID">
+                                                  ID: {model.id}
+                                              </div>
+                                          </td>
+                                          <td className="px-4 py-3">
+                                              <input 
+                                                  type="number"
+                                                  className="w-full px-2 py-1 border border-slate-200 rounded text-slate-600 text-xs focus:ring-1 focus:ring-reze-500 outline-none"
+                                                  value={model.maxInputTokens}
+                                                  onChange={(e) => handleUpdateModel(model, { maxInputTokens: parseInt(e.target.value) })}
+                                              />
+                                          </td>
+                                          <td className="px-4 py-3">
+                                              <input 
+                                                  type="number"
+                                                  className="w-full px-2 py-1 border border-slate-200 rounded text-slate-600 text-xs focus:ring-1 focus:ring-reze-500 outline-none"
+                                                  value={model.maxOutputTokens}
+                                                  onChange={(e) => handleUpdateModel(model, { maxOutputTokens: parseInt(e.target.value) })}
+                                              />
+                                          </td>
+                                          <td className="px-4 py-3 text-right">
+                                              <button 
+                                                  onClick={() => handleUpdateModel(model, { isActive: !model.isActive })}
+                                                  className={`px-2 py-1 rounded-full text-xs font-medium transition-colors ${model.isActive ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}
+                                              >
+                                                  {model.isActive ? 'Active' : 'Disabled'}
+                                              </button>
+                                          </td>
+                                      </tr>
+                                  ))}
+                              </tbody>
+                          </table>
+                      </div>
+                  </div>
+                )}
             </div>
         ))}
 

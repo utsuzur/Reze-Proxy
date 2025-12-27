@@ -23,6 +23,8 @@ export interface UserToken {
   expiresAt: string | null;
   accessibleModelIds: string[]; // List of model IDs this token can access
   usageCount: number;
+  maxRequestsPerDay?: number;
+  maxRequestsPerMinute?: number;
   isActive: boolean;
 }
 

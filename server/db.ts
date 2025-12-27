@@ -47,6 +47,31 @@ function initializeTables() {
     outputTokens INTEGER DEFAULT 0,
     isActive INTEGER DEFAULT 1
   )`);
+
+  // Indices for Performance
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_tokens_token ON tokens(token)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_models_name ON models(name)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_models_providerId ON models(providerId)");
+
+  // Migrations for Rate Limiting
+  const columnsToAdd = [
+    "ALTER TABLE tokens ADD COLUMN maxRequestsPerDay INTEGER DEFAULT NULL",
+    "ALTER TABLE tokens ADD COLUMN maxRequestsPerMinute INTEGER DEFAULT NULL",
+    "ALTER TABLE tokens ADD COLUMN requestsToday INTEGER DEFAULT 0",
+    "ALTER TABLE tokens ADD COLUMN lastRequestDate TEXT DEFAULT NULL",
+    "ALTER TABLE tokens ADD COLUMN requestsThisMinute INTEGER DEFAULT 0",
+    "ALTER TABLE tokens ADD COLUMN lastRequestMinute TEXT DEFAULT NULL"
+  ];
+
+  columnsToAdd.forEach(sql => {
+    db.run(sql, (err) => {
+      // Ignore error if column already exists
+      if (err && !err.message.includes("duplicate column name")) {
+         // It's noisy to log every time on existing DB, so maybe suppress or check code
+         // console.error("Migration error (safe to ignore if column exists):", err.message);
+      }
+    });
+  });
 }
 
 export default db;

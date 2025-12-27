@@ -1,11 +1,20 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Home from './pages/Home';
 import Login from './pages/admin/Login';
-import Offerings from './pages/admin/Offerings';
-import ManageTokens from './pages/admin/ManageTokens';
-import Dashboard from './pages/admin/Dashboard';
+
+// Lazy Load Admin Pages
+const Dashboard = React.lazy(() => import('./pages/admin/Dashboard'));
+const Offerings = React.lazy(() => import('./pages/admin/Offerings'));
+const ManageTokens = React.lazy(() => import('./pages/admin/ManageTokens'));
+
+// Loading Component
+const LoadingFallback = () => (
+  <div className="flex items-center justify-center min-h-[50vh]">
+    <div className="w-8 h-8 border-4 border-reze-200 border-t-reze-600 rounded-full animate-spin"></div>
+  </div>
+);
 
 // Protected Route Component
 const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
@@ -13,7 +22,13 @@ const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
   if (!isAuthenticated) {
     return <Navigate to="/shrine/login" replace />;
   }
-  return <Layout isAdmin={true}>{children}</Layout>;
+  return (
+    <Layout isAdmin={true}>
+      <Suspense fallback={<LoadingFallback />}>
+        {children}
+      </Suspense>
+    </Layout>
+  );
 };
 
 const App: React.FC = () => {

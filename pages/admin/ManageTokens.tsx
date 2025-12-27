@@ -12,6 +12,8 @@ const ManageTokens: React.FC = () => {
   // Create/Edit Form State
   const [newName, setNewName] = useState('');
   const [newExpiry, setNewExpiry] = useState('');
+  const [maxRequestsPerDay, setMaxRequestsPerDay] = useState<number | ''>('');
+  const [maxRequestsPerMinute, setMaxRequestsPerMinute] = useState<number | ''>('');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
   const [isActive, setIsActive] = useState(true);
@@ -46,7 +48,9 @@ const ManageTokens: React.FC = () => {
         token: regeneratedToken || undefined, // Only send if regenerated
         expiresAt: newExpiry ? new Date(newExpiry).toISOString() : null,
         accessibleModelIds: selectedModels.length > 0 ? selectedModels : availableModels.map(m => m.id),
-        isActive: isActive
+        isActive: isActive,
+        maxRequestsPerDay: maxRequestsPerDay !== '' ? Number(maxRequestsPerDay) : undefined,
+        maxRequestsPerMinute: maxRequestsPerMinute !== '' ? Number(maxRequestsPerMinute) : undefined
       });
       setTokens(await storageService.getTokens());
       resetForm();
@@ -61,7 +65,9 @@ const ManageTokens: React.FC = () => {
           expiresAt: newExpiry ? new Date(newExpiry).toISOString() : null,
           accessibleModelIds: selectedModels.length > 0 ? selectedModels : availableModels.map(m => m.id), // Default to all if none selected
           usageCount: 0,
-          isActive: isActive
+          isActive: isActive,
+          maxRequestsPerDay: maxRequestsPerDay !== '' ? Number(maxRequestsPerDay) : undefined,
+          maxRequestsPerMinute: maxRequestsPerMinute !== '' ? Number(maxRequestsPerMinute) : undefined
       };
 
       await storageService.saveToken(newToken);
@@ -74,6 +80,8 @@ const ManageTokens: React.FC = () => {
     setEditingToken(token);
     setNewName(token.name);
     setNewExpiry(token.expiresAt ? new Date(token.expiresAt).toISOString().split('T')[0] : '');
+    setMaxRequestsPerDay(token.maxRequestsPerDay || '');
+    setMaxRequestsPerMinute(token.maxRequestsPerMinute || '');
     setSelectedModels(token.accessibleModelIds);
     setIsActive(token.isActive);
     setIsCreating(true);
@@ -88,6 +96,8 @@ const ManageTokens: React.FC = () => {
     setRegeneratedToken(null);
     setNewName('');
     setNewExpiry('');
+    setMaxRequestsPerDay('');
+    setMaxRequestsPerMinute('');
     setSelectedModels([]);
     setIsActive(true);
   };
@@ -161,6 +171,31 @@ const ManageTokens: React.FC = () => {
                             value={newExpiry}
                             onChange={(e) => setNewExpiry(e.target.value)}
                             className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none"
+                        />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Max Requests / Day</label>
+                        <input 
+                            type="number" 
+                            min="0"
+                            value={maxRequestsPerDay}
+                            onChange={(e) => setMaxRequestsPerDay(e.target.value === '' ? '' : parseInt(e.target.value))}
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none"
+                            placeholder="Unlimited"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Max Requests / Minute</label>
+                        <input 
+                            type="number" 
+                            min="0"
+                            value={maxRequestsPerMinute}
+                            onChange={(e) => setMaxRequestsPerMinute(e.target.value === '' ? '' : parseInt(e.target.value))}
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none"
+                            placeholder="Unlimited"
                         />
                     </div>
                   </div>
@@ -300,6 +335,25 @@ const ManageTokens: React.FC = () => {
                 <div className="text-xs font-mono text-slate-500 mb-3 bg-slate-50 p-2 rounded break-all">
                     {token.token.substring(0, 6)}...{token.token.substring(token.token.length - 4)}
                 </div>
+                
+                {token.maxRequestsPerDay && (
+                  <div className="mb-4">
+                    <div className="flex justify-between text-[10px] mb-1">
+                      <span className="text-slate-500 font-medium uppercase tracking-wider">Daily Usage</span>
+                      <span className="text-slate-700 font-bold">{token.usageCount} / {token.maxRequestsPerDay}</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/50">
+                      <div 
+                        className={`h-full transition-all duration-500 rounded-full ${
+                          (token.usageCount / token.maxRequestsPerDay) > 0.9 ? 'bg-red-500' : 
+                          (token.usageCount / token.maxRequestsPerDay) > 0.7 ? 'bg-amber-500' : 'bg-reze-500'
+                        }`}
+                        style={{ width: `${Math.min(100, (token.usageCount / token.maxRequestsPerDay) * 100)}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex justify-between items-center text-xs text-slate-500">
                     <div className="flex items-center gap-1">
                         <Calendar className="w-3 h-3" />
@@ -328,12 +382,31 @@ const ManageTokens: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
                 {tokens.map(token => (
                     <tr key={token.id} className={`hover:bg-slate-50/50 ${!token.isActive ? 'opacity-60 bg-slate-50' : ''}`}>
-                        <td className="px-6 py-4 font-medium text-slate-800 flex items-center gap-2">
-                            <div className={`p-1.5 rounded ${token.isActive ? 'bg-reze-50 text-reze-500' : 'bg-slate-100 text-slate-400'}`}>
-                                <Key className="w-4 h-4" />
+                        <td className="px-6 py-4 font-medium text-slate-800">
+                            <div className="flex items-center gap-2 mb-1">
+                                <div className={`p-1.5 rounded ${token.isActive ? 'bg-reze-50 text-reze-500' : 'bg-slate-100 text-slate-400'}`}>
+                                    <Key className="w-4 h-4" />
+                                </div>
+                                {token.name}
+                                {!token.isActive && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full ml-2">Disabled</span>}
                             </div>
-                            {token.name}
-                            {!token.isActive && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full ml-2">Disabled</span>}
+                            {token.maxRequestsPerDay && (
+                                <div className="mt-2 w-32">
+                                    <div className="flex justify-between text-[9px] mb-1">
+                                        <span className="text-slate-400 uppercase tracking-tighter">Usage</span>
+                                        <span className="text-slate-600 font-bold">{Math.round((token.usageCount / token.maxRequestsPerDay) * 100)}%</span>
+                                    </div>
+                                    <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                                        <div 
+                                            className={`h-full transition-all duration-500 ${
+                                                (token.usageCount / token.maxRequestsPerDay) > 0.9 ? 'bg-red-500' : 
+                                                (token.usageCount / token.maxRequestsPerDay) > 0.7 ? 'bg-amber-500' : 'bg-reze-500'
+                                            }`}
+                                            style={{ width: `${Math.min(100, (token.usageCount / token.maxRequestsPerDay) * 100)}%` }}
+                                        ></div>
+                                    </div>
+                                </div>
+                            )}
                         </td>
                         <td className="px-6 py-4 font-mono text-slate-500">
                             {token.token.substring(0, 6)}...{token.token.substring(token.token.length - 4)}

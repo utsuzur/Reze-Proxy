@@ -1,12 +1,18 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import db from './db.ts';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Request Logger
 app.use((req, res, next) => {
@@ -118,9 +124,9 @@ app.get('/api/tokens', (req, res) => {
 });
 
 app.post('/api/tokens', (req, res) => {
-  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive } = req.body;
-  db.run('INSERT INTO tokens (id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, name, token, createdAt, expiresAt, JSON.stringify(accessibleModelIds), usageCount, isActive !== undefined ? (isActive ? 1 : 0) : 1],
+  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute } = req.body;
+  db.run('INSERT INTO tokens (id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, name, token, createdAt, expiresAt, JSON.stringify(accessibleModelIds), usageCount, isActive !== undefined ? (isActive ? 1 : 0) : 1, maxRequestsPerDay, maxRequestsPerMinute],
     function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json(req.body);
@@ -129,19 +135,19 @@ app.post('/api/tokens', (req, res) => {
 });
 
 app.put('/api/tokens', (req, res) => {
-  const { id, name, token, expiresAt, accessibleModelIds, isActive } = req.body;
+  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute } = req.body;
   
   if (token) {
-    db.run('UPDATE tokens SET name = ?, token = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ? WHERE id = ?',
-      [name, token, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, id],
+    db.run('UPDATE tokens SET name = ?, token = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ?, maxRequestsPerDay = ?, maxRequestsPerMinute = ? WHERE id = ?',
+      [name, token, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, maxRequestsPerDay, maxRequestsPerMinute, id],
       function(err) {
           if (err) return res.status(500).json({ error: err.message });
           res.json({ updated: this.changes });
       }
     );
   } else {
-    db.run('UPDATE tokens SET name = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ? WHERE id = ?',
-      [name, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, id],
+    db.run('UPDATE tokens SET name = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ?, maxRequestsPerDay = ?, maxRequestsPerMinute = ? WHERE id = ?',
+      [name, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, maxRequestsPerDay, maxRequestsPerMinute, id],
       function(err) {
           if (err) return res.status(500).json({ error: err.message });
           res.json({ updated: this.changes });
@@ -189,11 +195,7 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
-app.all('/v1/chat/completions', async (req, res) => {
-  if (req.method === 'GET' || req.method === 'HEAD') {
-    return res.status(405).json({ error: { message: "Method Not Allowed. Please use POST." } });
-  }
-
+app.post('/v1/chat/completions', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: { message: "Missing or invalid Authorization header", type: "invalid_request_error" } });
@@ -214,6 +216,34 @@ app.all('/v1/chat/completions', async (req, res) => {
     if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
       return res.status(401).json({ error: { message: "API key expired" } });
     }
+
+    // Rate Limiting
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+    const currentMinuteStr = now.toISOString().slice(0, 16);
+
+    // Daily Limit
+    if (row.maxRequestsPerDay && row.maxRequestsPerDay > 0) {
+        if (row.lastRequestDate === todayStr && row.requestsToday >= row.maxRequestsPerDay) {
+             return res.status(429).json({ error: { message: "Daily request limit reached. Resets at 00:00 UTC." } });
+        }
+    }
+
+    // Minute Limit
+    if (row.maxRequestsPerMinute && row.maxRequestsPerMinute > 0) {
+         if (row.lastRequestMinute === currentMinuteStr && row.requestsThisMinute >= row.maxRequestsPerMinute) {
+             return res.status(429).json({ error: { message: "Rate limit exceeded. Please wait a minute." } });
+         }
+    }
+
+    // Update Rate Limit Counters
+    db.run(`UPDATE tokens SET 
+        requestsToday = CASE WHEN lastRequestDate = ? THEN requestsToday + 1 ELSE 1 END,
+        lastRequestDate = ?,
+        requestsThisMinute = CASE WHEN lastRequestMinute = ? THEN requestsThisMinute + 1 ELSE 1 END,
+        lastRequestMinute = ?
+        WHERE id = ?`, 
+        [todayStr, todayStr, currentMinuteStr, currentMinuteStr, row.id]);
 
     const modelId = req.body.model;
     if (!modelId) return res.status(400).json({ error: { message: "Model is required" } });
@@ -394,6 +424,16 @@ app.all('/v1/chat/completions', async (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// --- Static Frontend Serving ---
+const distPath = path.join(__dirname, '../dist');
+app.use(express.static(distPath));
+
+// Handle SPA routing - return index.html for any non-API routes
+app.get(/^(?!\/api|\/v1).*$/, (req, res, next) => {
+  // Logic is redundant if regex handles it, but keeping 'next' safety or serving file
+  res.sendFile(path.join(distPath, 'index.html'));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
 });
