@@ -1,16 +1,23 @@
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
+import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
 import db from './db.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
-app.use(cors());
+const IS_PROD = process.env.NODE_ENV === 'production';
+const ADMIN_COOKIE_NAME = IS_PROD ? '__Host-reze_admin' : 'reze_admin';
+const CSRF_COOKIE_NAME = 'reze_csrf';
+const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -20,8 +27,379 @@ app.use((req, res, next) => {
   next();
 });
 
-// --- Providers ---
-app.get('/api/providers', (req, res) => {
+const base64Url = (buf: Buffer): string =>
+ buf
+   .toString('base64')
+   .replace(/\+/g, '-')
+   .replace(/\//g, '_')
+   .replace(/=+$/g, '');
+
+const randomBase64Url = (bytes: number): string => base64Url(crypto.randomBytes(bytes));
+
+const sha256Hex = (data: string): string => crypto.createHash('sha256').update(data).digest('hex');
+
+const timingSafeEqualHex = (aHex: string, bHex: string): boolean => {
+ // Always compare buffers of equal length to avoid throwing.
+ const a = Buffer.from(aHex, 'hex');
+ const b = Buffer.from(bHex, 'hex');
+ if (a.length !== b.length) return false;
+ return crypto.timingSafeEqual(a, b);
+};
+
+const parseCookies = (cookieHeader?: string): Record<string, string> => {
+ const out: Record<string, string> = {};
+ if (!cookieHeader) return out;
+
+ const parts = cookieHeader.split(';');
+ for (const part of parts) {
+   const idx = part.indexOf('=');
+   if (idx === -1) continue;
+   const rawKey = part.slice(0, idx).trim();
+   const rawVal = part.slice(idx + 1).trim();
+   if (!rawKey) continue;
+   out[rawKey] = decodeURIComponent(rawVal);
+ }
+ return out;
+};
+
+// Helper to promisify db.get / db.run (shared across admin + proxy)
+const dbGet = (sql: string, params: any[]) =>
+ new Promise<any>((resolve, reject) => {
+   db.get(sql, params, (err, row) => {
+     if (err) reject(err);
+     else resolve(row);
+   });
+ });
+
+const dbRun = (sql: string, params: any[]) =>
+ new Promise<void>((resolve, reject) => {
+   db.run(sql, params, (err) => {
+     if (err) reject(err);
+     else resolve();
+   });
+ });
+
+const dbRunChanges = (sql: string, params: any[]) =>
+ new Promise<number>((resolve, reject) => {
+   db.run(sql, params, function (err) {
+     if (err) reject(err);
+     else resolve(this.changes);
+   });
+ });
+
+const setAdminCookie = (res: express.Response, value: string, maxAgeMs: number) => {
+ res.cookie(ADMIN_COOKIE_NAME, value, {
+   httpOnly: true,
+   secure: IS_PROD,
+   sameSite: 'strict',
+   path: '/',
+   maxAge: maxAgeMs
+ });
+};
+
+const clearAdminCookie = (res: express.Response) => {
+ res.cookie(ADMIN_COOKIE_NAME, '', {
+   httpOnly: true,
+   secure: IS_PROD,
+   sameSite: 'strict',
+   path: '/',
+   maxAge: 0
+ });
+};
+
+const setCsrfCookie = (res: express.Response, value: string, maxAgeMs: number) => {
+ res.cookie(CSRF_COOKIE_NAME, value, {
+   httpOnly: false,
+   secure: IS_PROD,
+   sameSite: 'strict',
+   path: '/',
+   maxAge: maxAgeMs
+ });
+};
+
+const clearCsrfCookie = (res: express.Response) => {
+ res.cookie(CSRF_COOKIE_NAME, '', {
+   httpOnly: false,
+   secure: IS_PROD,
+   sameSite: 'strict',
+   path: '/',
+   maxAge: 0
+ });
+};
+
+// --- Admin Login Rate Limiting (in-memory) ---
+type RateState = { count: number; resetAt: number };
+const ADMIN_LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const ADMIN_LOGIN_MAX_ATTEMPTS = 10;
+const adminLoginAttemptsByIp = new Map<string, RateState>();
+
+const checkAndIncrementAdminLogin = (ip: string): { allowed: boolean; retryAfterMs?: number } => {
+ const now = Date.now();
+ const entry = adminLoginAttemptsByIp.get(ip);
+ if (!entry || now > entry.resetAt) {
+   adminLoginAttemptsByIp.set(ip, { count: 1, resetAt: now + ADMIN_LOGIN_WINDOW_MS });
+   return { allowed: true };
+ }
+ if (entry.count >= ADMIN_LOGIN_MAX_ATTEMPTS) {
+   return { allowed: false, retryAfterMs: Math.max(0, entry.resetAt - now) };
+ }
+ entry.count += 1;
+ return { allowed: true };
+};
+
+// Best-effort pruning
+setInterval(() => {
+ const now = Date.now();
+ for (const [ip, entry] of adminLoginAttemptsByIp.entries()) {
+   if (now > entry.resetAt) adminLoginAttemptsByIp.delete(ip);
+ }
+}, 60_000).unref?.();
+
+const auditAdminEvent = async (
+ req: express.Request,
+ event: string,
+ details?: Record<string, unknown>
+) => {
+ try {
+   const timestamp = new Date().toISOString();
+   const ip = req.ip;
+   const userAgent = req.get('user-agent') || null;
+   const detailsJson = details ? JSON.stringify(details) : null;
+   await dbRun(
+     'INSERT INTO admin_audit_log (timestamp, event, ip, userAgent, details) VALUES (?, ?, ?, ?, ?)',
+     [timestamp, event, ip, userAgent, detailsJson]
+   );
+ } catch (e) {
+   // Don't block auth flows on audit logging failures
+   console.error('admin_audit_log insert failed', e);
+ }
+};
+
+type AdminSessionRow = {
+ id: number;
+ selector: string;
+ validatorHash: string;
+ createdAt: string;
+ lastSeenAt: string | null;
+ expiresAt: string;
+ revokedAt: string | null;
+ ip: string | null;
+ userAgent: string | null;
+};
+
+const getAdminSessionFromRequest = async (req: express.Request): Promise<AdminSessionRow | null> => {
+ const cookies = parseCookies(req.headers.cookie);
+ const raw = cookies[ADMIN_COOKIE_NAME];
+ if (!raw) return null;
+
+ const [selector, validator] = raw.split('.');
+ if (!selector || !validator) return null;
+
+ const row = (await dbGet('SELECT * FROM admin_sessions WHERE selector = ?', [
+   selector
+ ])) as AdminSessionRow | undefined;
+
+ if (!row) return null;
+ if (row.revokedAt) return null;
+
+ const expiresMs = new Date(row.expiresAt).getTime();
+ if (!Number.isFinite(expiresMs) || expiresMs <= Date.now()) return null;
+
+ const validatorHash = sha256Hex(validator);
+ if (!timingSafeEqualHex(validatorHash, row.validatorHash)) return null;
+
+ return row;
+};
+
+const requireAdmin = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+ try {
+   // CSRF enforcement on state-changing methods (cookie-authenticated)
+   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+     const cookies = parseCookies(req.headers.cookie);
+     const csrfCookie = cookies[CSRF_COOKIE_NAME];
+     const csrfHeader = req.get('x-csrf-token');
+     if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
+       return res.status(403).json({ error: 'CSRF validation failed' });
+     }
+   }
+
+   const session = await getAdminSessionFromRequest(req);
+   if (!session) {
+     clearAdminCookie(res);
+     return res.status(401).json({ error: 'Unauthorized' });
+   }
+
+   // Fire-and-forget lastSeenAt update
+   db.run('UPDATE admin_sessions SET lastSeenAt = ? WHERE id = ?', [new Date().toISOString(), session.id]);
+
+   (req as any).adminSession = session;
+   next();
+ } catch (e) {
+   console.error('requireAdmin error', e);
+   res.status(500).json({ error: 'Internal server error' });
+ }
+};
+
+// --- Admin Auth ---
+app.post('/api/admin/login', async (req, res) => {
+ const adminUser = process.env.ADMIN_USER;
+ const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH;
+
+ if (!adminUser || !adminPasswordHash) {
+   return res.status(500).json({ ok: false, error: 'Admin auth is not configured' });
+ }
+
+ const { allowed, retryAfterMs } = checkAndIncrementAdminLogin(req.ip);
+ if (!allowed) {
+   res.setHeader('Retry-After', Math.ceil((retryAfterMs || 0) / 1000));
+   await auditAdminEvent(req, 'login_rate_limited');
+   return res.status(429).json({ ok: false, error: 'Too many login attempts' });
+ }
+
+ const username = typeof req.body?.username === 'string' ? req.body.username : '';
+ const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+ const isValidUser = username === adminUser;
+ const isValidPass = password ? bcrypt.compareSync(password, adminPasswordHash) : false;
+
+ if (!isValidUser || !isValidPass) {
+   await auditAdminEvent(req, 'login_failure');
+   return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+ }
+
+ // Create session (retry on rare selector collisions)
+ const nowIso = new Date().toISOString();
+ const expiresAtIso = new Date(Date.now() + ADMIN_SESSION_TTL_MS).toISOString();
+
+ let selector = '';
+ let validator = '';
+ let created = false;
+
+ for (let attempt = 0; attempt < 3; attempt++) {
+   selector = randomBase64Url(16);
+   validator = randomBase64Url(32);
+   const validatorHash = sha256Hex(validator);
+
+   try {
+     await dbRun(
+       'INSERT INTO admin_sessions (selector, validatorHash, createdAt, lastSeenAt, expiresAt, revokedAt, ip, userAgent) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)',
+       [selector, validatorHash, nowIso, nowIso, expiresAtIso, req.ip, req.get('user-agent') || null]
+     );
+     created = true;
+     break;
+   } catch (e: any) {
+     // SQLite constraint errors include "SQLITE_CONSTRAINT"
+     if (String(e?.message || '').includes('SQLITE_CONSTRAINT')) continue;
+     throw e;
+   }
+ }
+
+ if (!created) {
+   return res.status(500).json({ ok: false, error: 'Failed to create session' });
+ }
+
+ const csrf = randomBase64Url(32);
+ setAdminCookie(res, `${selector}.${validator}`, ADMIN_SESSION_TTL_MS);
+ setCsrfCookie(res, csrf, ADMIN_SESSION_TTL_MS);
+
+ await auditAdminEvent(req, 'login_success');
+
+ res.json({ ok: true });
+});
+
+app.get('/api/admin/me', requireAdmin, async (req, res) => {
+ try {
+   const session = (req as any).adminSession as AdminSessionRow;
+
+   const expiresMs = new Date(session.expiresAt).getTime();
+   const remainingMs = Math.max(0, expiresMs - Date.now());
+
+   // Rotate validator (fixed expiry; do NOT extend expiresAt)
+   const newValidator = randomBase64Url(32);
+   const newValidatorHash = sha256Hex(newValidator);
+
+   await dbRun('UPDATE admin_sessions SET validatorHash = ?, lastSeenAt = ? WHERE id = ?', [
+     newValidatorHash,
+     new Date().toISOString(),
+     session.id
+   ]);
+
+   setAdminCookie(res, `${session.selector}.${newValidator}`, remainingMs);
+
+   res.json({ authenticated: true });
+ } catch (e) {
+   console.error('/api/admin/me error', e);
+   res.status(500).json({ error: 'Internal server error' });
+ }
+});
+
+app.post('/api/admin/logout', requireAdmin, async (req, res) => {
+ try {
+   const session = (req as any).adminSession as AdminSessionRow;
+   const nowIso = new Date().toISOString();
+
+   await dbRun('UPDATE admin_sessions SET revokedAt = ? WHERE id = ?', [nowIso, session.id]);
+   await auditAdminEvent(req, 'logout');
+
+   clearAdminCookie(res);
+   clearCsrfCookie(res);
+   res.json({ ok: true });
+ } catch (e) {
+   console.error('/api/admin/logout error', e);
+   res.status(500).json({ error: 'Internal server error' });
+ }
+});
+
+app.post('/api/admin/logout-all', requireAdmin, async (req, res) => {
+ try {
+   const nowIso = new Date().toISOString();
+   const revoked = await dbRunChanges('UPDATE admin_sessions SET revokedAt = ? WHERE revokedAt IS NULL', [
+     nowIso
+   ]);
+
+   await auditAdminEvent(req, 'logout_all', { revoked });
+
+   clearAdminCookie(res);
+   clearCsrfCookie(res);
+   res.json({ ok: true, revoked });
+ } catch (e) {
+   console.error('/api/admin/logout-all error', e);
+   res.status(500).json({ error: 'Internal server error' });
+ }
+});
+
+/**
+ * Public read endpoints for the landing page (no admin cookie required).
+ * These intentionally avoid returning provider base URLs / keys.
+ */
+app.get('/api/public/providers', (req, res) => {
+  db.all(
+    `SELECT DISTINCT p.id, p.name
+     FROM providers p
+     JOIN models m ON m.providerId = p.id
+     WHERE m.isActive = 1
+     ORDER BY p.name ASC`,
+    [],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    }
+  );
+});
+
+app.get('/api/public/models', (req, res) => {
+  db.all('SELECT * FROM models WHERE isActive = 1', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const formatted = (rows as any[]).map((r) => ({
+      ...r,
+      isActive: true
+    }));
+    res.json(formatted);
+  });
+});
+
+// --- Providers (Admin) ---
+app.get('/api/providers', requireAdmin, (req, res) => {
   db.all('SELECT * FROM providers', [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     const formatted = (rows as any[]).map(r => ({
@@ -32,7 +410,7 @@ app.get('/api/providers', (req, res) => {
   });
 });
 
-app.post('/api/providers', (req, res) => {
+app.post('/api/providers', requireAdmin, (req, res) => {
   const { id, name, baseUrl, apiKey, type } = req.body;
   db.run('INSERT INTO providers (id, name, baseUrl, apiKey, type) VALUES (?, ?, ?, ?, ?)', 
     [id, name, baseUrl, apiKey, type], 
@@ -43,7 +421,7 @@ app.post('/api/providers', (req, res) => {
   );
 });
 
-app.put('/api/providers', (req, res) => {
+app.put('/api/providers', requireAdmin, (req, res) => {
   const { id, name, baseUrl, apiKey } = req.body;
   db.run('UPDATE providers SET name = ?, baseUrl = ?, apiKey = ? WHERE id = ?',
     [name, baseUrl, apiKey, id],
@@ -54,7 +432,7 @@ app.put('/api/providers', (req, res) => {
   );
 });
 
-app.delete('/api/providers/:id', (req, res) => {
+app.delete('/api/providers/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
   db.run('DELETE FROM providers WHERE id = ?', [id], function(err) {
     if (err) return res.status(500).json({ error: err.message });
@@ -63,7 +441,7 @@ app.delete('/api/providers/:id', (req, res) => {
 });
 
 // --- Models ---
-app.get('/api/models', (req, res) => {
+app.get('/api/models', requireAdmin, (req, res) => {
   db.all('SELECT * FROM models', [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     const formatted = (rows as any[]).map((r) => ({
@@ -74,7 +452,7 @@ app.get('/api/models', (req, res) => {
   });
 });
 
-app.post('/api/models', (req, res) => {
+app.post('/api/models', requireAdmin, (req, res) => {
   const models = Array.isArray(req.body) ? req.body : [req.body];
   
   const stmt = db.prepare('INSERT OR REPLACE INTO models (id, providerId, name, maxInputTokens, maxOutputTokens, isActive) VALUES (?, ?, ?, ?, ?, ?)');
@@ -90,7 +468,7 @@ app.post('/api/models', (req, res) => {
   });
 });
 
-app.put('/api/models', (req, res) => {
+app.put('/api/models', requireAdmin, (req, res) => {
     const m = req.body;
     db.run('UPDATE models SET name = ?, maxInputTokens = ?, maxOutputTokens = ?, isActive = ? WHERE id = ? AND providerId = ?',
         [m.name, m.maxInputTokens, m.maxOutputTokens, m.isActive ? 1 : 0, m.id, m.providerId],
@@ -103,7 +481,7 @@ app.put('/api/models', (req, res) => {
 
 
 // --- Tokens ---
-app.get('/api/tokens', (req, res) => {
+app.get('/api/tokens', requireAdmin, (req, res) => {
   db.all('SELECT * FROM tokens', [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     const formatted = (rows as any[]).map((r) => {
@@ -123,7 +501,7 @@ app.get('/api/tokens', (req, res) => {
   });
 });
 
-app.post('/api/tokens', (req, res) => {
+app.post('/api/tokens', requireAdmin, (req, res) => {
   const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute } = req.body;
   db.run('INSERT INTO tokens (id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [id, name, token, createdAt, expiresAt, JSON.stringify(accessibleModelIds), usageCount, isActive !== undefined ? (isActive ? 1 : 0) : 1, maxRequestsPerDay, maxRequestsPerMinute],
@@ -134,7 +512,7 @@ app.post('/api/tokens', (req, res) => {
   );
 });
 
-app.put('/api/tokens', (req, res) => {
+app.put('/api/tokens', requireAdmin, (req, res) => {
   const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute } = req.body;
   
   if (token) {
@@ -156,7 +534,7 @@ app.put('/api/tokens', (req, res) => {
   }
 });
 
-app.delete('/api/tokens/:id', (req, res) => {
+app.delete('/api/tokens/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
   db.run('DELETE FROM tokens WHERE id = ?', [id], function(err) {
     if (err) return res.status(500).json({ error: err.message });
@@ -164,8 +542,8 @@ app.delete('/api/tokens/:id', (req, res) => {
   });
 });
 
-// --- User Token Self-Service ---
-app.delete('/api/logs/prune', (req, res) => {
+// --- Admin Maintenance ---
+app.delete('/api/logs/prune', requireAdmin, (req, res) => {
     // Delete logs older than 30 days
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -260,13 +638,7 @@ import NodeCache from 'node-cache';
 const tokenCache = new NodeCache({ stdTTL: 60 }); // Cache tokens for 60 seconds
 const modelCache = new NodeCache({ stdTTL: 300 }); // Cache model configs for 5 minutes
 
-// Helper to promisify db.get
-const dbGet = (sql: string, params: any[]) => new Promise<any>((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-    });
-});
+// dbGet helper is defined near the top for reuse (admin auth + proxy)
 
 app.post('/v1/chat/completions', async (req, res) => {
   const authHeader = req.headers.authorization;

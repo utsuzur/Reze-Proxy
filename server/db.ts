@@ -87,6 +87,35 @@ function initializeTables() {
 
   db.run("CREATE INDEX IF NOT EXISTS idx_request_logs_tokenId ON request_logs(tokenId)");
   db.run("CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp)");
+
+  // --- Admin Sessions (Cookie-based, server-side) ---
+  db.run(`CREATE TABLE IF NOT EXISTS admin_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    selector TEXT NOT NULL UNIQUE,
+    validatorHash TEXT NOT NULL,
+    createdAt TEXT NOT NULL,
+    lastSeenAt TEXT,
+    expiresAt TEXT NOT NULL,
+    revokedAt TEXT,
+    ip TEXT,
+    userAgent TEXT
+  )`);
+
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_sessions_selector ON admin_sessions(selector)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_admin_sessions_expiresAt ON admin_sessions(expiresAt)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_admin_sessions_revokedAt ON admin_sessions(revokedAt)");
+
+  // --- Admin Audit Log (Optional but recommended) ---
+  db.run(`CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    event TEXT NOT NULL,
+    ip TEXT,
+    userAgent TEXT,
+    details TEXT
+  )`);
+
+  db.run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_timestamp ON admin_audit_log(timestamp)");
 }
 
 export default db;

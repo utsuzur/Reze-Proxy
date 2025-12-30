@@ -1,4 +1,4 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Home from './pages/Home';
@@ -16,17 +16,43 @@ const LoadingFallback = () => (
   </div>
 );
 
-// Protected Route Component
+// Protected Route Component (server-verified cookie session)
 const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
-  const isAuthenticated = sessionStorage.getItem('reze_auth') === 'true';
-  if (!isAuthenticated) {
+  const [status, setStatus] = useState<'loading' | 'authed' | 'unauthed'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/me', { credentials: 'same-origin' });
+        if (!res.ok) {
+          if (!cancelled) setStatus('unauthed');
+          return;
+        }
+        const data = await res.json();
+        if (!cancelled) setStatus(data?.authenticated ? 'authed' : 'unauthed');
+      } catch {
+        if (!cancelled) setStatus('unauthed');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (status === 'loading') {
+    return <LoadingFallback />;
+  }
+
+  if (status === 'unauthed') {
     return <Navigate to="/shrine/login" replace />;
   }
+
   return (
     <Layout isAdmin={true}>
-      <Suspense fallback={<LoadingFallback />}>
-        {children}
-      </Suspense>
+      <Suspense fallback={<LoadingFallback />}>{children}</Suspense>
     </Layout>
   );
 };
