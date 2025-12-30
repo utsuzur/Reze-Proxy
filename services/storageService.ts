@@ -26,7 +26,10 @@ class StorageService {
   async getProviders(): Promise<Provider[]> {
     try {
       const res = await fetch(`${API_URL}/providers`, { credentials: 'same-origin' });
-      if (!res.ok) throw new Error('Failed to fetch providers');
+      if (!res.ok) {
+        console.error('getProviders failed:', res.status, res.statusText);
+        throw new Error('Failed to fetch providers');
+      }
       return await res.json();
     } catch (e) {
       console.error(e);
@@ -64,7 +67,10 @@ class StorageService {
   async getModels(): Promise<ModelConfig[]> {
     try {
       const res = await fetch(`${API_URL}/models`, { credentials: 'same-origin' });
-      if (!res.ok) throw new Error('Failed to fetch models');
+      if (!res.ok) {
+        console.error('getModels failed:', res.status, res.statusText);
+        throw new Error('Failed to fetch models');
+      }
       return await res.json();
     } catch (e) {
       console.error(e);
@@ -94,7 +100,10 @@ class StorageService {
   async getTokens(): Promise<UserToken[]> {
     try {
       const res = await fetch(`${API_URL}/tokens`, { credentials: 'same-origin' });
-      if (!res.ok) throw new Error('Failed to fetch tokens');
+      if (!res.ok) {
+        console.error('getTokens failed:', res.status, res.statusText);
+        throw new Error('Failed to fetch tokens');
+      }
       return await res.json();
     } catch (e) {
       console.error(e);

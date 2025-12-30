@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import * as crypto from 'node:crypto';
@@ -311,20 +312,9 @@ app.get('/api/admin/me', requireAdmin, async (req, res) => {
  try {
    const session = (req as any).adminSession as AdminSessionRow;
 
-   const expiresMs = new Date(session.expiresAt).getTime();
-   const remainingMs = Math.max(0, expiresMs - Date.now());
-
-   // Rotate validator (fixed expiry; do NOT extend expiresAt)
-   const newValidator = randomBase64Url(32);
-   const newValidatorHash = sha256Hex(newValidator);
-
-   await dbRun('UPDATE admin_sessions SET validatorHash = ?, lastSeenAt = ? WHERE id = ?', [
-     newValidatorHash,
-     new Date().toISOString(),
-     session.id
-   ]);
-
-   setAdminCookie(res, `${session.selector}.${newValidator}`, remainingMs);
+   // Extend session expiry if needed? 
+   // For now, we just verify. 
+   // Rotation removed to prevent race conditions with parallel dashboard fetches.
 
    res.json({ authenticated: true });
  } catch (e) {
