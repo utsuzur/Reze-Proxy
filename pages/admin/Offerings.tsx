@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, RefreshCw, Save, X, Globe, Check, Edit2, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Save, X, Globe, Check, Edit2, ChevronDown, Search } from 'lucide-react';
 import { Provider, ModelConfig } from '../../types';
 import { storageService } from '../../services/storageService';
 
@@ -19,6 +19,7 @@ const Offerings: React.FC = () => {
   const [isAdding, setIsAdding] = useState(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
+  const [modelSearchQueries, setModelSearchQueries] = useState<Record<string, string>>({});
   
   // Provider Form State
   const [newProviderName, setNewProviderName] = useState('');
@@ -445,11 +446,23 @@ const Offerings: React.FC = () => {
                           </div>
                       </div>
 
-                      <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Configured Models</h4>
+                      <div className="flex justify-between items-center mb-4 px-1">
+                          <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Configured Models</h4>
+                          <div className="relative">
+                              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
+                              <input 
+                                  type="text" 
+                                  placeholder="Search models..." 
+                                  className="pl-9 pr-4 py-1.5 text-sm border border-slate-200 rounded-full focus:ring-1 focus:ring-reze-500 outline-none bg-slate-50 w-64"
+                                  value={modelSearchQueries[provider.id] || ''}
+                                  onChange={(e) => setModelSearchQueries(prev => ({ ...prev, [provider.id]: e.target.value }))}
+                              />
+                          </div>
+                      </div>
                       
                       {/* Mobile Model List */}
                       <div className="md:hidden space-y-4">
-                          {models.filter(m => m.providerId === provider.id).map(model => (
+                          {models.filter(m => m.providerId === provider.id && m.name.toLowerCase().includes((modelSearchQueries[provider.id] || '').toLowerCase())).map(model => (
                               <div key={model.id} className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-3">
                                   <div>
                                       <label className="text-xs font-medium text-slate-500 block mb-1">Public Name</label>
@@ -505,7 +518,7 @@ const Offerings: React.FC = () => {
                                   </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
-                                  {models.filter(m => m.providerId === provider.id).map(model => (
+                                  {models.filter(m => m.providerId === provider.id && m.name.toLowerCase().includes((modelSearchQueries[provider.id] || '').toLowerCase())).map(model => (
                                       <tr key={model.id} className="hover:bg-slate-50/50">
                                           <td className="px-4 py-3">
                                               <input 
