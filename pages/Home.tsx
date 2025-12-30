@@ -1,8 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { ModelConfig, Provider } from '../types';
-import { storageService } from '../services/storageService';
+import { ModelConfig } from '../types';
 import { Cpu, Zap, Box, Key, Search, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react';
 import { TokenChecker } from '../components/TokenChecker';
+
+type PublicProvider = {
+  id: string;
+  name: string;
+};
 
 const CopyButton: React.FC<{ text: string }> = ({ text }) => {
     const [copied, setCopied] = useState(false);
@@ -26,18 +30,31 @@ const CopyButton: React.FC<{ text: string }> = ({ text }) => {
 
 const Home: React.FC = () => {
   const [models, setModels] = useState<ModelConfig[]>([]);
-  const [providers, setProviders] = useState<Provider[]>([]);
+  const [providers, setProviders] = useState<PublicProvider[]>([]);
   const [isTokenCheckerOpen, setIsTokenCheckerOpen] = useState(false);
-  
+
   const [globalSearch, setGlobalSearch] = useState('');
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   const [providerSearch, setProviderSearch] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const fetchData = async () => {
-      const allModels = await storageService.getModels();
-      setModels(allModels.filter(m => m.isActive));
-      setProviders(await storageService.getProviders());
+      try {
+        const [modelsRes, providersRes] = await Promise.all([
+          fetch('/api/public/models', { credentials: 'same-origin' }),
+          fetch('/api/public/providers', { credentials: 'same-origin' })
+        ]);
+
+        const modelsJson = modelsRes.ok ? await modelsRes.json() : [];
+        const providersJson = providersRes.ok ? await providersRes.json() : [];
+
+        setModels(modelsJson);
+        setProviders(providersJson);
+      } catch (e) {
+        console.error(e);
+        setModels([]);
+        setProviders([]);
+      }
     };
     fetchData();
   }, []);

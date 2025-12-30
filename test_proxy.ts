@@ -1,6 +1,4 @@
 
-import fetch from 'node-fetch';
-
 const token = 'rz-3fhey5djuhvck1cdqiqvqf';
 const url = 'http://localhost:3000/v1/chat/completions';
 
