@@ -184,6 +184,54 @@ const Offerings: React.FC = () => {
     setModels(prev => prev.map(m => (m.id === updated.id && m.providerId === updated.providerId) ? updated : m));
   };
 
+  const handleBulkToggle = async (providerId: string, isActive: boolean) => {
+    if (!window.confirm(`Are you sure you want to ${isActive ? 'enable' : 'disable'} all models for this provider?`)) return;
+    
+    const providerModels = models.filter(m => m.providerId === providerId);
+    if (providerModels.length === 0) return;
+
+    const updatedModels = providerModels.map(m => ({ ...m, isActive }));
+    await storageService.saveModels(updatedModels);
+    
+    setModels(prev => prev.map(m => {
+        if (m.providerId === providerId) {
+            return { ...m, isActive };
+        }
+        return m;
+    }));
+  };
+
+  const handleBulkUpdate = async (providerId: string, inputTokens: string, outputTokens: string) => {
+    const maxInput = parseInt(inputTokens);
+    const maxOutput = parseInt(outputTokens);
+
+    if (isNaN(maxInput) && isNaN(maxOutput)) return;
+    
+    if (!window.confirm(`Update tokens for all models?`)) return;
+
+    const providerModels = models.filter(m => m.providerId === providerId);
+    if (providerModels.length === 0) return;
+
+    const updatedModels = providerModels.map(m => ({
+        ...m,
+        maxInputTokens: isNaN(maxInput) ? m.maxInputTokens : maxInput,
+        maxOutputTokens: isNaN(maxOutput) ? m.maxOutputTokens : maxOutput
+    }));
+
+    await storageService.saveModels(updatedModels);
+    
+    setModels(prev => prev.map(m => {
+        if (m.providerId === providerId) {
+             return {
+                ...m,
+                maxInputTokens: isNaN(maxInput) ? m.maxInputTokens : maxInput,
+                maxOutputTokens: isNaN(maxOutput) ? m.maxOutputTokens : maxOutput
+            };
+        }
+        return m;
+    }));
+  };
+
   return (
     <div>
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
@@ -345,6 +393,58 @@ const Offerings: React.FC = () => {
                 
                 {expandedProviders.has(provider.id) && (
                   <div className="p-4 md:p-6 animate-in slide-in-from-top-2 fade-in duration-200">
+                      <div className="flex flex-col items-center justify-center mb-8 gap-6 border-b border-slate-100 pb-6">
+                          <div className="flex flex-col items-center gap-3 w-full">
+                                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Bulk Actions</h4>
+                                <div className="flex flex-wrap justify-center items-end gap-3">
+                                    <div>
+                                        <label className="text-[10px] text-slate-500 block mb-1 text-center">Set Max Input</label>
+                                        <input 
+                                            id={`bulk-input-${provider.id}`}
+                                            type="number" 
+                                            className="w-24 px-2 py-1 border border-slate-200 rounded text-sm outline-none focus:ring-1 focus:ring-reze-500 text-center"
+                                            placeholder="4096"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] text-slate-500 block mb-1 text-center">Set Max Output</label>
+                                        <input 
+                                            id={`bulk-output-${provider.id}`}
+                                            type="number" 
+                                            className="w-24 px-2 py-1 border border-slate-200 rounded text-sm outline-none focus:ring-1 focus:ring-reze-500 text-center"
+                                            placeholder="1024"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            const inputEl = document.getElementById(`bulk-input-${provider.id}`) as HTMLInputElement;
+                                            const outputEl = document.getElementById(`bulk-output-${provider.id}`) as HTMLInputElement;
+                                            handleBulkUpdate(provider.id, inputEl.value, outputEl.value);
+                                            inputEl.value = '';
+                                            outputEl.value = '';
+                                        }}
+                                        className="px-4 py-1.5 bg-slate-800 text-white text-xs font-medium rounded hover:bg-slate-900 transition-colors shadow-sm"
+                                    >
+                                        Apply
+                                    </button>
+                                </div>
+                          </div>
+                          <div className="flex gap-3 justify-center">
+                              <button
+                                  onClick={() => handleBulkToggle(provider.id, false)}
+                                  className="text-xs px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded transition-colors font-medium border border-slate-200"
+                              >
+                                  Disable All Models
+                              </button>
+                              <button
+                                  onClick={() => handleBulkToggle(provider.id, true)}
+                                  className="text-xs px-4 py-1.5 bg-reze-100 hover:bg-reze-200 text-reze-700 rounded transition-colors font-medium border border-reze-200"
+                              >
+                                  Enable All Models
+                              </button>
+                          </div>
+                      </div>
+
                       <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Configured Models</h4>
                       
                       {/* Mobile Model List */}
