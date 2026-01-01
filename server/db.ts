@@ -54,6 +54,7 @@ function initializeTables() {
   db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_tokens_token ON tokens(token)");
   db.run("CREATE INDEX IF NOT EXISTS idx_models_name ON models(name)");
   db.run("CREATE INDEX IF NOT EXISTS idx_models_providerId ON models(providerId)");
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_providers_name ON providers(name)");
 
   // Migrations for Rate Limiting
   const columnsToAdd = [

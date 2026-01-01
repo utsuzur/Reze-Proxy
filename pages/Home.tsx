@@ -205,7 +205,7 @@ const Home: React.FC = () => {
                                                     <span className="font-mono text-sm font-semibold text-slate-700 break-all truncate">
                                                         {model.name}
                                                     </span>
-                                                    <CopyButton text={model.name} />
+                                                    <CopyButton text={`${provider.name}/${model.name}`} />
                                                 </div>
                                                 <Cpu className="w-4 h-4 text-slate-400 flex-shrink-0 ml-2" />
                                             </div>

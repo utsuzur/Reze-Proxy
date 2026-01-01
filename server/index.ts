@@ -378,10 +378,17 @@ app.get('/api/public/providers', (req, res) => {
 });
 
 app.get('/api/public/models', (req, res) => {
-  db.all('SELECT * FROM models WHERE isActive = 1', [], (err, rows) => {
+  db.all(
+    `SELECT m.*, p.name as providerName 
+     FROM models m 
+     JOIN providers p ON m.providerId = p.id 
+     WHERE m.isActive = 1`, 
+    [], 
+    (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     const formatted = (rows as any[]).map((r) => ({
       ...r,
+      id: `${r.providerName}/${r.name}`,
       isActive: true
     }));
     res.json(formatted);
@@ -611,10 +618,18 @@ import { countTokens } from './tokenService.ts';
 // --- OpenAI Compatible Proxy ---
 
 app.get('/v1/models', (req, res) => {
-  db.all('SELECT DISTINCT name FROM models WHERE isActive = 1', [], (err, rows) => {
+  db.all(
+    `SELECT m.name, p.name as providerName 
+     FROM models m 
+     JOIN providers p ON m.providerId = p.id 
+     WHERE m.isActive = 1`, 
+    [], 
+    (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
+    // Use a Set to ensure uniqueness of the generated IDs if needed, 
+    // though (providerName, modelName) should be unique if logic holds.
     const models = (rows as any[]).map(r => ({
-        id: r.name, // Expose the model name as ID
+        id: `${r.providerName}/${r.name}`, // Expose provider/model
         object: "model",
         created: Math.floor(Date.now() / 1000),
         owned_by: "reze-proxy"
@@ -713,7 +728,32 @@ app.post('/v1/chat/completions', async (req, res) => {
     // 2. Get Model (Cache -> DB)
     let modelRow: any = modelCache.get(modelId);
     if (!modelRow) {
-        modelRow = await dbGet('SELECT m.*, p.baseUrl, p.apiKey as providerKey FROM models m JOIN providers p ON m.providerId = p.id WHERE m.name = ? AND m.isActive = 1 LIMIT 1', [modelId]);
+        // Try parsing "Provider/Model"
+        if (modelId.includes('/')) {
+            const parts = modelId.split('/');
+            const providerName = parts[0];
+            const modelName = parts.slice(1).join('/');
+            
+            modelRow = await dbGet(
+                `SELECT m.*, p.baseUrl, p.apiKey as providerKey 
+                 FROM models m 
+                 JOIN providers p ON m.providerId = p.id 
+                 WHERE p.name = ? AND m.name = ? AND m.isActive = 1 LIMIT 1`, 
+                [providerName, modelName]
+            );
+        }
+
+        // Fallback: Try searching by model name directly (legacy/ambiguous mode)
+        if (!modelRow) {
+            modelRow = await dbGet(
+                `SELECT m.*, p.baseUrl, p.apiKey as providerKey 
+                 FROM models m 
+                 JOIN providers p ON m.providerId = p.id 
+                 WHERE m.name = ? AND m.isActive = 1 LIMIT 1`, 
+                [modelId]
+            );
+        }
+
         if (modelRow) modelCache.set(modelId, modelRow);
     }
 
