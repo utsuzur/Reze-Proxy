@@ -18,8 +18,8 @@ const ErrorLogs: React.FC = () => {
     fetchLogs();
   }, []);
 
-  const handlePrune = async () => {
-    if (!window.confirm("Are you sure you want to delete error logs older than 30 days?")) return;
+  const handleClearAll = async () => {
+    if (!window.confirm("Are you sure you want to PERMANENTLY delete ALL error logs? This cannot be undone.")) return;
     await storageService.pruneErrorLogs();
     await fetchLogs();
   };
@@ -44,11 +44,11 @@ const ErrorLogs: React.FC = () => {
             Refresh
           </button>
           <button
-            onClick={handlePrune}
+            onClick={handleClearAll}
             className="flex items-center gap-2 px-4 py-2 text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
           >
             <Trash2 className="w-4 h-4" />
-            Prune Old Logs
+            Clear All Logs
           </button>
         </div>
       </div>

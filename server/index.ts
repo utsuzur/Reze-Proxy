@@ -560,14 +560,10 @@ app.get('/api/errors', requireAdmin, (req, res) => {
 });
 
 app.delete('/api/errors/prune', requireAdmin, (req, res) => {
-    // Delete error logs older than 30 days
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const timestamp = thirtyDaysAgo.toISOString();
-
-    db.run('DELETE FROM error_logs WHERE timestamp < ?', [timestamp], function(err) {
+    // Delete ALL error logs
+    db.run('DELETE FROM error_logs', [], function(err) {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ deleted: this.changes, message: `Pruned error logs older than ${timestamp}` });
+        res.json({ deleted: this.changes, message: `Cleared all error logs` });
     });
 });
 
