@@ -1,4 +1,4 @@
-import { ModelConfig, Provider, UserToken } from '../types';
+import { ModelConfig, Provider, UserToken, ErrorLog } from '../types';
 
 const API_URL = '/api';
 
@@ -22,6 +22,29 @@ const csrfHeaders = (): Record<string, string> => {
 };
 
 class StorageService {
+  // --- Error Logs ---
+  async getErrorLogs(): Promise<ErrorLog[]> {
+    try {
+      const res = await fetch(`${API_URL}/errors`, { credentials: 'same-origin' });
+      if (!res.ok) {
+        console.error('getErrorLogs failed:', res.status, res.statusText);
+        throw new Error('Failed to fetch error logs');
+      }
+      return await res.json();
+    } catch (e) {
+      console.error(e);
+      return [];
+    }
+  }
+
+  async pruneErrorLogs(): Promise<void> {
+    await fetch(`${API_URL}/errors/prune`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: { ...csrfHeaders() }
+    });
+  }
+
   // --- Providers ---
   async getProviders(): Promise<Provider[]> {
     try {

@@ -552,6 +552,25 @@ app.delete('/api/logs/prune', requireAdmin, (req, res) => {
     });
 });
 
+app.get('/api/errors', requireAdmin, (req, res) => {
+    db.all('SELECT * FROM error_logs ORDER BY timestamp DESC LIMIT 100', [], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+app.delete('/api/errors/prune', requireAdmin, (req, res) => {
+    // Delete error logs older than 30 days
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const timestamp = thirtyDaysAgo.toISOString();
+
+    db.run('DELETE FROM error_logs WHERE timestamp < ?', [timestamp], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ deleted: this.changes, message: `Pruned error logs older than ${timestamp}` });
+    });
+});
+
 app.post('/api/my-token/details', (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "Token is required" });
@@ -825,12 +844,33 @@ app.post('/v1/chat/completions', async (req, res) => {
 
         if (!proxyRes.ok) {
            const errorText = await proxyRes.text();
-           try {
-              const errorJson = JSON.parse(errorText);
-              return res.status(proxyRes.status).json(errorJson);
-           } catch {
-              return res.status(proxyRes.status).send(errorText);
-           }
+           console.error(`Provider Error (${proxyRes.status}):`, errorText);
+
+           // Log to DB
+           db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+                [row.id, modelId, modelRow.providerId, 'provider_error', `Status ${proxyRes.status}: ${errorText}`, new Date().toISOString()]);
+
+           return res.json({
+              id: "chatcmpl-error",
+              object: "chat.completion",
+              created: Math.floor(Date.now() / 1000),
+              model: modelId,
+              choices: [
+                {
+                  "index": 0,
+                  "message": {
+                    "role": "assistant",
+                    "content": "Provider/Server is having an error. Ask the administrator if this keeps occuring"
+                  },
+                  "finish_reason": "stop"
+                }
+              ],
+              usage: {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+              }
+           });
         }
 
         if (isStreaming) {
@@ -930,7 +970,32 @@ app.post('/v1/chat/completions', async (req, res) => {
 
       } catch (e: any) {
         console.error("Proxy error:", e);
-        res.status(502).json({ error: { message: "Bad Gateway: Failed to connect to provider" } });
+        
+        // Log to DB
+        db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+            [row.id, modelId, modelRow.providerId, 'server_error', e.message || String(e), new Date().toISOString()]);
+
+        res.json({
+            id: "chatcmpl-error",
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: modelId,
+            choices: [
+            {
+                "index": 0,
+                "message": {
+                "role": "assistant",
+                "content": "Provider/Server is having an error. Ask the administrator if this keeps occuring"
+                },
+                "finish_reason": "stop"
+            }
+            ],
+            usage: {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+            }
+        });
       }
   } catch (err: any) {
       console.error("Server Error:", err);

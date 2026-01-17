@@ -8,6 +8,7 @@ import Login from './pages/admin/Login';
 const Dashboard = React.lazy(() => import('./pages/admin/Dashboard'));
 const Offerings = React.lazy(() => import('./pages/admin/Offerings'));
 const ManageTokens = React.lazy(() => import('./pages/admin/ManageTokens'));
+const ErrorLogs = React.lazy(() => import('./pages/admin/ErrorLogs'));
 
 // Loading Component
 const LoadingFallback = () => (
@@ -87,6 +88,12 @@ const App: React.FC = () => {
         <Route path="/shrine/manage-tokens" element={
           <ProtectedRoute>
             <ManageTokens />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/shrine/errors" element={
+          <ProtectedRoute>
+            <ErrorLogs />
           </ProtectedRoute>
         } />
 

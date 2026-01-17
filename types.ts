@@ -31,3 +31,13 @@ export interface UserToken {
 export interface AdminConfig {
   themeColor: string;
 }
+
+export interface ErrorLog {
+  id: number;
+  tokenId: string;
+  modelId: string;
+  providerId: string;
+  errorType: 'provider_error' | 'server_error';
+  errorMessage: string;
+  timestamp: string;
+}

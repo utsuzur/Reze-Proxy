@@ -117,6 +117,20 @@ function initializeTables() {
   )`);
 
   db.run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_timestamp ON admin_audit_log(timestamp)");
+
+  // --- Error Logs ---
+  db.run(`CREATE TABLE IF NOT EXISTS error_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tokenId TEXT,
+    modelId TEXT,
+    providerId TEXT,
+    errorType TEXT, -- 'provider_error' or 'server_error'
+    errorMessage TEXT,
+    timestamp TEXT NOT NULL,
+    FOREIGN KEY(tokenId) REFERENCES tokens(id) ON DELETE SET NULL
+  )`);
+
+  db.run("CREATE INDEX IF NOT EXISTS idx_error_logs_timestamp ON error_logs(timestamp)");
 }
 
 export default db;

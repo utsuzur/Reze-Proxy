@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Shield, Home, Server, Key, LayoutDashboard, Menu, X } from 'lucide-react';
+import { Shield, Home, Server, Key, LayoutDashboard, Menu, X, AlertTriangle } from 'lucide-react';
 
 interface LayoutProps {
   children?: React.ReactNode;
@@ -123,6 +123,14 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
               >
                 <Key className="w-5 h-5" />
                 User Tokens
+              </Link>
+              <Link
+                to="/shrine/errors"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/shrine/errors') ? 'bg-reze-50 text-reze-700 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+              >
+                <AlertTriangle className="w-5 h-5" />
+                Error Logs
               </Link>
             </div>
 
