@@ -69,10 +69,12 @@ function initializeTables() {
 
   columnsToAdd.forEach(sql => {
     db.run(sql, (err) => {
-      // Ignore error if column already exists
-      if (err && !err.message.includes("duplicate column name")) {
-         // It's noisy to log every time on existing DB, so maybe suppress or check code
-         // console.error("Migration error (safe to ignore if column exists):", err.message);
+      if (err) {
+        if (!err.message.includes("duplicate column name")) {
+          console.error(`Migration failed: ${sql}`, err);
+        }
+      } else {
+        console.log(`Migration applied: ${sql}`);
       }
     });
   });
@@ -133,5 +135,19 @@ function initializeTables() {
 
   db.run("CREATE INDEX IF NOT EXISTS idx_error_logs_timestamp ON error_logs(timestamp)");
 }
+
+export const dbReady = new Promise<void>((resolve, reject) => {
+  db.serialize(() => {
+      // Verify migrations success
+      db.all("PRAGMA table_info(providers)", (err, rows) => {
+        if (err) return reject(err);
+        const hasRemoveTopP = (rows as any[]).some(r => r.name === 'removeTopP');
+        if (!hasRemoveTopP) {
+          return reject(new Error("Critical migration failed: removeTopP column missing from providers table"));
+        }
+        resolve();
+      });
+  });
+});
 
 export default db;

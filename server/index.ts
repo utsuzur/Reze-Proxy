@@ -4,7 +4,7 @@ import path from 'path';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import db from './db.ts';
+import db, { dbReady } from './db.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1012,6 +1012,11 @@ app.get(/^(?!\/api|\/v1).*$/, (req, res, next) => {
   res.sendFile(path.join(distPath, 'index.html'));
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
+dbReady.then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  });
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
 });
