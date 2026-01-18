@@ -143,9 +143,15 @@ export const dbReady = new Promise<void>((resolve, reject) => {
         if (err) return reject(err);
         const hasRemoveTopP = (rows as any[]).some(r => r.name === 'removeTopP');
         if (!hasRemoveTopP) {
-          return reject(new Error("Critical migration failed: removeTopP column missing from providers table"));
+           console.log("Critical column removeTopP missing, attempting emergency repair...");
+           db.run("ALTER TABLE providers ADD COLUMN removeTopP INTEGER DEFAULT 0", (err) => {
+               if (err) return reject(new Error("Emergency repair failed: " + err.message));
+               console.log("Emergency repair successful: removeTopP column added.");
+               resolve();
+           });
+        } else {
+            resolve();
         }
-        resolve();
       });
   });
 });
