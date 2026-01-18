@@ -11,8 +11,9 @@ export interface Provider {
   id: string;
   name: string;
   baseUrl: string;
-  apiKey: string; // Stored securely in backend in real app
-  type: 'openai' | 'azure' | 'anthropic' | 'other';
+  apiKey?: string;
+  type?: string;
+  removeTopP?: boolean;
 }
 
 export interface UserToken {

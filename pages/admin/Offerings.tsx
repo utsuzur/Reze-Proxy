@@ -25,6 +25,7 @@ const Offerings: React.FC = () => {
   const [newProviderName, setNewProviderName] = useState('');
   const [newProviderUrl, setNewProviderUrl] = useState('');
   const [newProviderKey, setNewProviderKey] = useState('');
+  const [newRemoveTopP, setNewRemoveTopP] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState('');
@@ -102,6 +103,7 @@ const Offerings: React.FC = () => {
             name: newProviderName,
             baseUrl: newProviderUrl,
             apiKey: newProviderKey,
+            removeTopP: newRemoveTopP,
             type: 'openai'
         };
         await storageService.updateProvider(updatedProvider);
@@ -130,6 +132,7 @@ const Offerings: React.FC = () => {
             name: newProviderName,
             baseUrl: newProviderUrl,
             apiKey: newProviderKey,
+            removeTopP: newRemoveTopP,
             type: 'openai'
         };
 
@@ -158,6 +161,7 @@ const Offerings: React.FC = () => {
       setNewProviderName(provider.name);
       setNewProviderUrl(provider.baseUrl);
       setNewProviderKey(provider.apiKey || ''); 
+      setNewRemoveTopP(!!provider.removeTopP);
       setIsAdding(true);
       setFetchedModels([]);
   };
@@ -168,6 +172,7 @@ const Offerings: React.FC = () => {
       setNewProviderName('');
       setNewProviderUrl('');
       setNewProviderKey('');
+      setNewRemoveTopP(false);
       setFetchedModels([]);
       setFetchError('');
   };
@@ -316,6 +321,18 @@ const Offerings: React.FC = () => {
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none font-mono text-sm"
                     placeholder={editingProviderId ? "Leave blank to keep existing key" : "sk-..."}
                 />
+            </div>
+            <div className="md:col-span-2 flex items-center gap-2 mt-2">
+                <input
+                    type="checkbox"
+                    id="removeTopP"
+                    checked={newRemoveTopP}
+                    onChange={(e) => setNewRemoveTopP(e.target.checked)}
+                    className="w-4 h-4 text-reze-600 rounded border-slate-300 focus:ring-reze-500"
+                />
+                <label htmlFor="removeTopP" className="text-sm text-slate-700">
+                    Remove <code>top_p</code> parameter (Fix for some providers like o1)
+                </label>
             </div>
           </div>
 

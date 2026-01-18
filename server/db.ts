@@ -21,10 +21,11 @@ function initializeTables() {
   db.run(`CREATE TABLE IF NOT EXISTS providers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    baseUrl TEXT NOT NULL,
-    apiKey TEXT,
-    type TEXT NOT NULL
-  )`);
+          baseUrl TEXT NOT NULL,
+          apiKey TEXT,
+          type TEXT DEFAULT 'openai_compatible',
+          removeTopP INTEGER DEFAULT 0
+        )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS models (
     id TEXT,

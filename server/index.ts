@@ -408,20 +408,20 @@ app.get('/api/providers', requireAdmin, (req, res) => {
 });
 
 app.post('/api/providers', requireAdmin, (req, res) => {
-  const { id, name, baseUrl, apiKey, type } = req.body;
-  db.run('INSERT INTO providers (id, name, baseUrl, apiKey, type) VALUES (?, ?, ?, ?, ?)', 
-    [id, name, baseUrl, apiKey, type], 
+  const { id, name, baseUrl, apiKey, type, removeTopP } = req.body;
+  db.run('INSERT INTO providers (id, name, baseUrl, apiKey, type, removeTopP) VALUES (?, ?, ?, ?, ?, ?)', 
+    [id, name, baseUrl, apiKey, type, removeTopP ? 1 : 0], 
     function(err) {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ id, name, baseUrl, apiKey, type });
+      res.json({ id, name, baseUrl, apiKey, type, removeTopP });
     }
   );
 });
 
 app.put('/api/providers', requireAdmin, (req, res) => {
-  const { id, name, baseUrl, apiKey } = req.body;
-  db.run('UPDATE providers SET name = ?, baseUrl = ?, apiKey = ? WHERE id = ?',
-    [name, baseUrl, apiKey, id],
+  const { id, name, baseUrl, apiKey, removeTopP } = req.body;
+  db.run('UPDATE providers SET name = ?, baseUrl = ?, apiKey = ?, removeTopP = ? WHERE id = ?',
+    [name, baseUrl, apiKey, removeTopP ? 1 : 0, id],
     function(err) {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ updated: this.changes });
@@ -750,7 +750,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             const modelName = parts.slice(1).join('/');
             
             modelRow = await dbGet(
-                `SELECT m.*, p.baseUrl, p.apiKey as providerKey 
+                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.removeTopP 
                  FROM models m 
                  JOIN providers p ON m.providerId = p.id 
                  WHERE p.name = ? AND m.name = ? AND m.isActive = 1 LIMIT 1`, 
@@ -761,7 +761,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         // Fallback: Try searching by model name directly (legacy/ambiguous mode)
         if (!modelRow) {
             modelRow = await dbGet(
-                `SELECT m.*, p.baseUrl, p.apiKey as providerKey 
+                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.removeTopP 
                  FROM models m 
                  JOIN providers p ON m.providerId = p.id 
                  WHERE m.name = ? AND m.isActive = 1 LIMIT 1`, 
@@ -823,11 +823,14 @@ app.post('/v1/chat/completions', async (req, res) => {
           }
         }
         
-        // Use the provider's actual model ID (modelRow.id) instead of the public name
         const requestBody = { ...req.body, model: modelRow.id };
 
         if (finalMaxTokens) {
           requestBody.max_tokens = finalMaxTokens;
+        }
+
+        if (modelRow.removeTopP) {
+            delete requestBody.top_p;
         }
 
         // Proxy Request
