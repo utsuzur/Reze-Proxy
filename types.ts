@@ -14,6 +14,7 @@ export interface Provider {
   apiKey?: string;
   type?: string;
   removeTopP?: boolean;
+  lastUsedKeyIndex?: number;
 }
 
 export interface UserToken {

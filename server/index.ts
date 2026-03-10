@@ -399,10 +399,25 @@ app.get('/api/public/models', (req, res) => {
 app.get('/api/providers', requireAdmin, (req, res) => {
   db.all('SELECT * FROM providers', [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    const formatted = (rows as any[]).map(r => ({
-        ...r,
-        apiKey: r.apiKey ? `${r.apiKey.substring(0, 3)}...${r.apiKey.substring(r.apiKey.length - 4)}` : undefined
-    }));
+    const formatted = (rows as any[]).map(r => {
+        let displayKey = r.apiKey;
+        if (r.apiKey) {
+            try {
+                const parsed = JSON.parse(r.apiKey);
+                if (Array.isArray(parsed)) {
+                    displayKey = `${parsed.length} keys: [${parsed[0].substring(0, 3)}..., ${parsed[parsed.length-1].substring(parsed[parsed.length-1].length - 4)}]`;
+                } else {
+                    displayKey = `${r.apiKey.substring(0, 3)}...${r.apiKey.substring(r.apiKey.length - 4)}`;
+                }
+            } catch (e) {
+                displayKey = `${r.apiKey.substring(0, 3)}...${r.apiKey.substring(r.apiKey.length - 4)}`;
+            }
+        }
+        return {
+            ...r,
+            apiKey: displayKey
+        };
+    });
     res.json(formatted);
   });
 });
@@ -420,13 +435,24 @@ app.post('/api/providers', requireAdmin, (req, res) => {
 
 app.put('/api/providers', requireAdmin, (req, res) => {
   const { id, name, baseUrl, apiKey, removeTopP } = req.body;
-  db.run('UPDATE providers SET name = ?, baseUrl = ?, apiKey = ?, removeTopP = ? WHERE id = ?',
-    [name, baseUrl, apiKey, removeTopP ? 1 : 0, id],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes });
-    }
-  );
+  
+  if (apiKey && !apiKey.includes('...')) {
+    db.run('UPDATE providers SET name = ?, baseUrl = ?, apiKey = ?, removeTopP = ? WHERE id = ?',
+      [name, baseUrl, apiKey, removeTopP ? 1 : 0, id],
+      function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ updated: this.changes });
+      }
+    );
+  } else {
+    db.run('UPDATE providers SET name = ?, baseUrl = ?, removeTopP = ? WHERE id = ?',
+      [name, baseUrl, removeTopP ? 1 : 0, id],
+      function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ updated: this.changes });
+      }
+    );
+  }
 });
 
 app.delete('/api/providers/:id', requireAdmin, (req, res) => {
@@ -750,7 +776,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             const modelName = parts.slice(1).join('/');
             
             modelRow = await dbGet(
-                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.removeTopP 
+                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.removeTopP, p.lastUsedKeyIndex 
                  FROM models m 
                  JOIN providers p ON m.providerId = p.id 
                  WHERE p.name = ? AND m.name = ? AND m.isActive = 1 LIMIT 1`, 
@@ -761,7 +787,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         // Fallback: Try searching by model name directly (legacy/ambiguous mode)
         if (!modelRow) {
             modelRow = await dbGet(
-                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.removeTopP 
+                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.removeTopP, p.lastUsedKeyIndex 
                  FROM models m 
                  JOIN providers p ON m.providerId = p.id 
                  WHERE m.name = ? AND m.isActive = 1 LIMIT 1`, 
@@ -802,199 +828,228 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       }
 
+      // --- Key Pool Rotation & Retries ---
+      let apiKeys: string[] = [];
       try {
-        // Prepare Request
-        const providerUrl = modelRow.baseUrl.replace(/\/+$/, '') + '/chat/completions';
-        const headers: any = {
-          'Content-Type': 'application/json',
-        };
-        if (modelRow.providerKey) {
-          headers['Authorization'] = `Bearer ${modelRow.providerKey}`;
-        }
+          const parsed = JSON.parse(modelRow.providerKey);
+          apiKeys = Array.isArray(parsed) ? parsed : [modelRow.providerKey];
+      } catch (e) {
+          apiKeys = modelRow.providerKey ? [modelRow.providerKey] : [];
+      }
 
-        const isStreaming = req.body.stream === true;
+      if (apiKeys.length === 0) {
+          return res.status(500).json({ error: { message: "No API Key configured for this provider" } });
+      }
 
-        // Enforce max output tokens from model configuration
-        // This acts as a hard cap: strict minimum of (user_requested, configured_limit)
-        let finalMaxTokens = req.body.max_tokens;
-        if (modelRow.maxOutputTokens) {
-          if (!finalMaxTokens || finalMaxTokens > modelRow.maxOutputTokens) {
-            finalMaxTokens = modelRow.maxOutputTokens;
-          }
-        }
-        
-        const requestBody = { ...req.body, model: modelRow.id };
+      let lastUsedIndex = modelRow.lastUsedKeyIndex || 0;
+      let startIndex = (lastUsedIndex + 1) % apiKeys.length;
+      let currentAttempt = 0;
+      let success = false;
 
-        if (finalMaxTokens) {
-          requestBody.max_tokens = finalMaxTokens;
-        }
+      while (currentAttempt < apiKeys.length) {
+          const keyIndex = (startIndex + currentAttempt) % apiKeys.length;
+          const currentKey = apiKeys[keyIndex];
+          currentAttempt++;
 
-        if (modelRow.removeTopP) {
-            delete requestBody.top_p;
-        }
+          try {
+            // Prepare Request
+            const providerUrl = modelRow.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+            const headers: any = {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${currentKey}`
+            };
 
-        // Proxy Request
-        // We use global fetch (Node 18+)
-        const proxyRes = await fetch(providerUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(requestBody)
-        });
+            const isStreaming = req.body.stream === true;
 
-        if (!proxyRes.ok) {
-           const errorText = await proxyRes.text();
-           console.error(`Provider Error (${proxyRes.status}):`, errorText);
-
-           // Log to DB
-           db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
-                [row.id, modelId, modelRow.providerId, 'provider_error', `Status ${proxyRes.status}: ${errorText}`, new Date().toISOString()]);
-
-           return res.json({
-              id: "chatcmpl-error",
-              object: "chat.completion",
-              created: Math.floor(Date.now() / 1000),
-              model: modelId,
-              choices: [
-                {
-                  "index": 0,
-                  "message": {
-                    "role": "assistant",
-                    "content": "Provider/Server is having an error. Ask the administrator if this keeps occuring"
-                  },
-                  "finish_reason": "stop"
-                }
-              ],
-              usage: {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0
+            // Enforce max output tokens from model configuration
+            // This acts as a hard cap: strict minimum of (user_requested, configured_limit)
+            let finalMaxTokens = req.body.max_tokens;
+            if (modelRow.maxOutputTokens) {
+              if (!finalMaxTokens || finalMaxTokens > modelRow.maxOutputTokens) {
+                finalMaxTokens = modelRow.maxOutputTokens;
               }
-           });
-        }
-
-        if (isStreaming) {
-            // Forward headers for SSE
-            res.setHeader('Content-Type', 'text/event-stream');
-            res.setHeader('Cache-Control', 'no-cache');
-            res.setHeader('Connection', 'keep-alive');
+            }
             
-            if (proxyRes.body) {
-                // @ts-ignore
-                const reader = proxyRes.body.getReader();
-                const decoder = new TextDecoder();
-                
-                let accumulatedOutput = "";
+            const requestBody = { ...req.body, model: modelRow.id };
 
-                try {
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        
-                        const chunk = decoder.decode(value, { stream: true });
-                        res.write(chunk);
-                        
-                        // Accumulate for token counting (approximate)
-                        // Parsing SSE chunks is tricky, but we can try to extract 'content'
-                        const lines = chunk.split('\n');
-                        for (const line of lines) {
-                            if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-                                try {
-                                    const json = JSON.parse(line.substring(6));
-                                    if (json.choices?.[0]?.delta?.content) {
-                                        accumulatedOutput += json.choices[0].delta.content;
+            if (finalMaxTokens) {
+              requestBody.max_tokens = finalMaxTokens;
+            }
+
+            if (modelRow.removeTopP) {
+                delete requestBody.top_p;
+            }
+
+            // Proxy Request
+            const proxyRes = await fetch(providerUrl, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(requestBody)
+            });
+
+            if (!proxyRes.ok) {
+               const errorText = await proxyRes.text();
+               console.error(`Provider Key ${keyIndex} Error (${proxyRes.status}):`, errorText);
+
+               // Log to DB (Admin only)
+               db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+                    [row.id, modelId, modelRow.providerId, 'provider_error', `Key Index ${keyIndex} - Status ${proxyRes.status}: ${errorText}`, new Date().toISOString()]);
+
+               // If it's not the last key, try the next one
+               if (currentAttempt < apiKeys.length) {
+                   continue;
+               }
+
+               // All keys failed
+               return res.json({
+                  id: "chatcmpl-error",
+                  object: "chat.completion",
+                  created: Math.floor(Date.now() / 1000),
+                  model: modelId,
+                  choices: [
+                    {
+                      "index": 0,
+                      "message": {
+                        "role": "assistant",
+                        "content": "No API Key can be used to make this request"
+                      },
+                      "finish_reason": "stop"
+                    }
+                  ],
+                  usage: {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0
+                  }
+               });
+            }
+
+            // Success! Update rotation index
+            db.run('UPDATE providers SET lastUsedKeyIndex = ? WHERE id = ?', [keyIndex, modelRow.providerId]);
+            success = true;
+
+            if (isStreaming) {
+                // Forward headers for SSE
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
+                
+                if (proxyRes.body) {
+                    // @ts-ignore
+                    const reader = proxyRes.body.getReader();
+                    const decoder = new TextDecoder();
+                    
+                    let accumulatedOutput = "";
+
+                    try {
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            
+                            const chunk = decoder.decode(value, { stream: true });
+                            res.write(chunk);
+                            
+                            // Accumulate for token counting (approximate)
+                            const lines = chunk.split('\n');
+                            for (const line of lines) {
+                                if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                                    try {
+                                        const json = JSON.parse(line.substring(6));
+                                        if (json.choices?.[0]?.delta?.content) {
+                                            accumulatedOutput += json.choices[0].delta.content;
+                                        }
+                                    } catch (e) {
+                                        // ignore parse errors for partial chunks
                                     }
-                                } catch (e) {
-                                    // ignore parse errors for partial chunks
                                 }
                             }
                         }
+                    } catch (error) {
+                        console.error("Streaming error:", error);
+                        res.end();
+                    } finally {
+                        res.end();
+                        
+                        // Count tokens after stream finishes
+                        const inputTokens = countTokens(inputContent, modelId);
+                        const outputTokens = countTokens(accumulatedOutput, modelId);
+                        
+                        console.log(`[${new Date().toISOString()}] Stream Completion: Model=${modelId} | User=${row.name} | Input=${inputTokens} | Output=${outputTokens}`);
+                        
+                        db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', 
+                            [inputTokens, outputTokens, row.id]);
+
+                        db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)',
+                            [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
                     }
-                } catch (error) {
-                    console.error("Streaming error:", error);
+                } else {
                     res.end();
-                } finally {
-                    res.end();
-                    
-                    // Count tokens after stream finishes
-                    const messages = req.body.messages || [];
-                    const inputContent = messages.map((m: any) => m.content || '').join('\n');
-                    const inputTokens = countTokens(inputContent, modelId);
-                    const outputTokens = countTokens(accumulatedOutput, modelId);
-                    
-                     console.log(`[${new Date().toISOString()}] Stream Completion: Model=${modelId} | User=${row.name} | Input=${inputTokens} | Output=${outputTokens}`);
-                    
-                    db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', 
-                        [inputTokens, outputTokens, row.id]);
-
-                    db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)',
-                        [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
                 }
-            } else {
-                res.end();
+                return;
             }
-            return;
-        }
 
-        // Non-streaming handling (existing logic)
-        const responseText = await proxyRes.text();
+            // Non-streaming handling
+            const responseText = await proxyRes.text();
 
-        let data;
-        try {
-            data = JSON.parse(responseText);
-        } catch (e) {
-            console.error("Failed to parse provider response as JSON:", responseText);
-            return res.status(502).json({ error: { message: "Invalid JSON response from provider" } });
-        }
-        
-        // Count Tokens (Approximation)
-        const messages = req.body.messages || [];
-        const inputContent = messages.map((m: any) => m.content || '').join('\n');
-        const inputTokens = countTokens(inputContent, modelId);
-        
-        const outputContent = data.choices?.[0]?.message?.content || '';
-        const outputTokens = countTokens(outputContent, modelId);
-
-        // Log Request
-        console.log(`[${new Date().toISOString()}] Completion: Model=${modelId} | User=${row.name} (${token.substring(0,6)}...) | Input=${inputTokens} | Output=${outputTokens}`);
-
-        // Update Usage
-        db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', 
-          [inputTokens, outputTokens, row.id]);
-
-        db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)',
-            [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
-
-        // Return Response
-        res.json(data);
-
-      } catch (e: any) {
-        console.error("Proxy error:", e);
-        
-        // Log to DB
-        db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
-            [row.id, modelId, modelRow.providerId, 'server_error', e.message || String(e), new Date().toISOString()]);
-
-        res.json({
-            id: "chatcmpl-error",
-            object: "chat.completion",
-            created: Math.floor(Date.now() / 1000),
-            model: modelId,
-            choices: [
-            {
-                "index": 0,
-                "message": {
-                "role": "assistant",
-                "content": "Provider/Server is having an error. Ask the administrator if this keeps occuring"
-                },
-                "finish_reason": "stop"
+            let data;
+            try {
+                data = JSON.parse(responseText);
+            } catch (e) {
+                console.error("Failed to parse provider response as JSON:", responseText);
+                return res.status(502).json({ error: { message: "Invalid JSON response from provider" } });
             }
-            ],
-            usage: {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
+            
+            // Count Tokens
+            const inputTokens = countTokens(inputContent, modelId);
+            const outputContent = data.choices?.[0]?.message?.content || '';
+            const outputTokens = countTokens(outputContent, modelId);
+
+            // Log Request
+            console.log(`[${new Date().toISOString()}] Completion: Model=${modelId} | User=${row.name} (${token.substring(0,6)}...) | Input=${inputTokens} | Output=${outputTokens}`);
+
+            // Update Usage
+            db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', 
+              [inputTokens, outputTokens, row.id]);
+
+            db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)',
+                [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
+
+            // Return Response
+            return res.json(data);
+
+          } catch (e: any) {
+            console.error(`Proxy Attempt ${currentAttempt} Error:`, e);
+            
+            // Log to DB (Admin only)
+            db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+                [row.id, modelId, modelRow.providerId, 'server_error', `Key Index ${keyIndex} - ${e.message || String(e)}`, new Date().toISOString()]);
+
+            if (currentAttempt < apiKeys.length) {
+                continue;
             }
-        });
+
+            return res.json({
+                id: "chatcmpl-error",
+                object: "chat.completion",
+                created: Math.floor(Date.now() / 1000),
+                model: modelId,
+                choices: [
+                {
+                    "index": 0,
+                    "message": {
+                    "role": "assistant",
+                    "content": "No API Key can be used to make this request"
+                    },
+                    "finish_reason": "stop"
+                }
+                ],
+                usage: {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+                }
+            });
+          }
       }
   } catch (err: any) {
       console.error("Server Error:", err);

@@ -21,11 +21,12 @@ function initializeTables() {
   db.run(`CREATE TABLE IF NOT EXISTS providers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-          baseUrl TEXT NOT NULL,
-          apiKey TEXT,
-          type TEXT DEFAULT 'openai_compatible',
-          removeTopP INTEGER DEFAULT 0
-        )`);
+    baseUrl TEXT NOT NULL,
+    apiKey TEXT, -- Store as JSON array string for multiple keys
+    type TEXT DEFAULT 'openai_compatible',
+    removeTopP INTEGER DEFAULT 0,
+    lastUsedKeyIndex INTEGER DEFAULT 0
+  )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS models (
     id TEXT,
@@ -64,7 +65,8 @@ function initializeTables() {
     "ALTER TABLE tokens ADD COLUMN requestsToday INTEGER DEFAULT 0",
     "ALTER TABLE tokens ADD COLUMN lastRequestDate TEXT DEFAULT NULL",
     "ALTER TABLE tokens ADD COLUMN requestsThisMinute INTEGER DEFAULT 0",
-    "ALTER TABLE tokens ADD COLUMN lastRequestMinute TEXT DEFAULT NULL"
+    "ALTER TABLE tokens ADD COLUMN lastRequestMinute TEXT DEFAULT NULL",
+    "ALTER TABLE providers ADD COLUMN lastUsedKeyIndex INTEGER DEFAULT 0"
   ];
 
   columnsToAdd.forEach(sql => {

@@ -60,9 +60,20 @@ const Offerings: React.FC = () => {
 
     try {
         const cleanUrl = newProviderUrl.replace(/\/+$/, '');
+        
+        let fetchKey = newProviderKey;
+        try {
+            const parsed = JSON.parse(newProviderKey);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                fetchKey = parsed[0];
+            }
+        } catch (e) {
+            // Not JSON, use as is
+        }
+
         const response = await fetch(`${cleanUrl}/models`, {
-            headers: newProviderKey ? {
-                'Authorization': `Bearer ${newProviderKey}`
+            headers: fetchKey ? {
+                'Authorization': `Bearer ${fetchKey}`
             } : {}
         });
 
@@ -313,14 +324,19 @@ const Offerings: React.FC = () => {
                 </div>
             </div>
             <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Provider User Token (API Key)</label>
-                <input 
-                    type="password" 
-                    value={newProviderKey}
-                    onChange={(e) => setNewProviderKey(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none font-mono text-sm"
-                    placeholder={editingProviderId ? "Leave blank to keep existing key" : "sk-..."}
-                />
+                <label className="block text-sm font-medium text-slate-700 mb-1">Provider API Key(s)</label>
+                <div className="space-y-1">
+                    <input 
+                        type="text" 
+                        value={newProviderKey}
+                        onChange={(e) => setNewProviderKey(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none font-mono text-sm"
+                        placeholder={editingProviderId ? "Keep as is (already masked) or enter new key(s)" : "sk-... or [\"key1\", \"key2\"]"}
+                    />
+                    <p className="text-[10px] text-slate-500">
+                        Enter a single key or a JSON array of keys for rotation: <code>["key1", "key2"]</code>
+                    </p>
+                </div>
             </div>
             <div className="md:col-span-2 flex items-center gap-2 mt-2">
                 <input
