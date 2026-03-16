@@ -219,15 +219,29 @@ const Home: React.FC = () => {
                                                 </div>
                                                 <Cpu className="w-4 h-4 text-slate-400 flex-shrink-0 ml-2" />
                                             </div>
-                                            <div className="flex gap-3 text-xs text-slate-500 mt-auto pt-2 border-t border-slate-50">
-                                                <div>
-                                                    <span className="block text-[10px] uppercase tracking-wider text-slate-400">Input</span>
-                                                    {model.maxInputTokens.toLocaleString()}
+                                            <div className="flex flex-col gap-2 mt-auto pt-2 border-t border-slate-50">
+                                                <div className="flex gap-4 text-xs text-slate-500">
+                                                    <div>
+                                                        <span className="block text-[10px] uppercase tracking-wider text-slate-400">Max Input</span>
+                                                        {model.maxInputTokens.toLocaleString()}
+                                                    </div>
+                                                    <div>
+                                                        <span className="block text-[10px] uppercase tracking-wider text-slate-400">Max Output</span>
+                                                        {model.maxOutputTokens.toLocaleString()}
+                                                    </div>
                                                 </div>
-                                                <div>
-                                                    <span className="block text-[10px] uppercase tracking-wider text-slate-400">Output</span>
-                                                    {model.maxOutputTokens.toLocaleString()}
-                                                </div>
+                                                {(model.inputPricePer1k !== undefined || model.outputPricePer1k !== undefined) && (
+                                                    <div className="flex gap-4 text-xs text-slate-600 bg-slate-50/50 p-2 rounded-md border border-slate-100">
+                                                        <div>
+                                                            <span className="block text-[9px] uppercase tracking-wider text-slate-400">Input / 1M</span>
+                                                            <span className="font-medium text-green-600">${((model.inputPricePer1k || 0) * 1000).toFixed(2)}</span>
+                                                        </div>
+                                                        <div>
+                                                            <span className="block text-[9px] uppercase tracking-wider text-slate-400">Output / 1M</span>
+                                                            <span className="font-medium text-green-600">${((model.outputPricePer1k || 0) * 1000).toFixed(2)}</span>
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     ))}
