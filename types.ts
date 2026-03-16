@@ -12,7 +12,7 @@ export interface Provider {
   name: string;
   baseUrl: string;
   apiKey?: string;
-  type?: string;
+  type?: 'openai' | 'anthropic';
   removeTopP?: boolean;
   lastUsedKeyIndex?: number;
 }

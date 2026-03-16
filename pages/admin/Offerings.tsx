@@ -4,13 +4,14 @@ import { Provider, ModelConfig } from '../../types';
 import { storageService } from '../../services/storageService';
 
 const PRESETS = [
-  { name: 'OpenAI', url: 'https://api.openai.com/v1' },
-  { name: 'Groq', url: 'https://api.groq.com/openai/v1' },
-  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
-  { name: 'DeepSeek', url: 'https://api.deepseek.com' },
-  { name: 'Mistral AI', url: 'https://api.mistral.ai/v1' },
-  { name: 'Together AI', url: 'https://api.together.xyz/v1' },
-  { name: 'Ollama (Local)', url: 'http://localhost:11434/v1' },
+  { name: 'OpenAI', url: 'https://api.openai.com/v1', type: 'openai' },
+  { name: 'Anthropic', url: 'https://api.anthropic.com', type: 'anthropic' },
+  { name: 'Groq', url: 'https://api.groq.com/openai/v1', type: 'openai' },
+  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', type: 'openai' },
+  { name: 'DeepSeek', url: 'https://api.deepseek.com', type: 'openai' },
+  { name: 'Mistral AI', url: 'https://api.mistral.ai/v1', type: 'openai' },
+  { name: 'Together AI', url: 'https://api.together.xyz/v1', type: 'openai' },
+  { name: 'Ollama (Local)', url: 'http://localhost:11434/v1', type: 'openai' },
 ];
 
 const Offerings: React.FC = () => {
@@ -25,6 +26,7 @@ const Offerings: React.FC = () => {
   const [newProviderName, setNewProviderName] = useState('');
   const [newProviderUrl, setNewProviderUrl] = useState('');
   const [newProviderKey, setNewProviderKey] = useState('');
+  const [newProviderType, setNewProviderType] = useState<'openai' | 'anthropic'>('openai');
   const [newRemoveTopP, setNewRemoveTopP] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [isFetching, setIsFetching] = useState(false);
@@ -59,8 +61,6 @@ const Offerings: React.FC = () => {
     setFetchError('');
 
     try {
-        const cleanUrl = newProviderUrl.replace(/\/+$/, '');
-        
         let fetchKey = newProviderKey;
         try {
             const parsed = JSON.parse(newProviderKey);
@@ -71,14 +71,22 @@ const Offerings: React.FC = () => {
             // Not JSON, use as is
         }
 
-        const response = await fetch(`${cleanUrl}/models`, {
-            headers: fetchKey ? {
-                'Authorization': `Bearer ${fetchKey}`
-            } : {}
+        const response = await fetch('/api/admin/fetch-models', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-csrf-token': document.cookie.match(/reze_csrf=([^;]+)/)?.[1] || ''
+            },
+            body: JSON.stringify({
+                url: newProviderUrl,
+                key: fetchKey,
+                type: newProviderType
+            })
         });
 
         if (!response.ok) {
-            throw new Error(`Provider returned ${response.status}: ${response.statusText}`);
+            const errJson = await response.json();
+            throw new Error(errJson.error || `Server returned ${response.status}`);
         }
 
         const data = await response.json();
@@ -98,7 +106,7 @@ const Offerings: React.FC = () => {
         setFetchedModels(modelList);
     } catch (e: any) {
         console.error("Failed to fetch", e);
-        setFetchError(e.message || "Failed to fetch models. Check URL, CORS, or API Key.");
+        setFetchError(e.message || "Failed to fetch models. Check URL or API Key.");
     } finally {
         setIsFetching(false);
     }
@@ -115,7 +123,7 @@ const Offerings: React.FC = () => {
             baseUrl: newProviderUrl,
             apiKey: newProviderKey,
             removeTopP: newRemoveTopP,
-            type: 'openai'
+            type: newProviderType
         };
         await storageService.updateProvider(updatedProvider);
         
@@ -144,7 +152,7 @@ const Offerings: React.FC = () => {
             baseUrl: newProviderUrl,
             apiKey: newProviderKey,
             removeTopP: newRemoveTopP,
-            type: 'openai'
+            type: newProviderType
         };
 
         const newModelConfigs: ModelConfig[] = fetchedModels.map(modelId => ({
@@ -172,6 +180,7 @@ const Offerings: React.FC = () => {
       setNewProviderName(provider.name);
       setNewProviderUrl(provider.baseUrl);
       setNewProviderKey(provider.apiKey || ''); 
+      setNewProviderType(provider.type || 'openai');
       setNewRemoveTopP(!!provider.removeTopP);
       setIsAdding(true);
       setFetchedModels([]);
@@ -183,6 +192,7 @@ const Offerings: React.FC = () => {
       setNewProviderName('');
       setNewProviderUrl('');
       setNewProviderKey('');
+      setNewProviderType('openai');
       setNewRemoveTopP(false);
       setFetchedModels([]);
       setFetchError('');
@@ -287,6 +297,7 @@ const Offerings: React.FC = () => {
                         if (preset) {
                             setNewProviderName(preset.name);
                             setNewProviderUrl(preset.url);
+                            setNewProviderType(preset.type as 'openai' | 'anthropic');
                         }
                     }}
                     className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700 focus:ring-2 focus:ring-reze-500 outline-none shadow-sm"
@@ -312,16 +323,25 @@ const Offerings: React.FC = () => {
                 />
             </div>
             <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Provider Type</label>
+                <select 
+                    value={newProviderType}
+                    onChange={(e) => setNewProviderType(e.target.value as 'openai' | 'anthropic')}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none bg-white"
+                >
+                    <option value="openai">OpenAI Compatible</option>
+                    <option value="anthropic">Anthropic</option>
+                </select>
+            </div>
+            <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-slate-700 mb-1">Base URL</label>
-                <div className="flex gap-2">
-                    <input 
-                        type="text" 
-                        value={newProviderUrl}
-                        onChange={(e) => setNewProviderUrl(e.target.value)}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none"
-                        placeholder="https://api.example.com/v1"
-                    />
-                </div>
+                <input 
+                    type="text" 
+                    value={newProviderUrl}
+                    onChange={(e) => setNewProviderUrl(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none"
+                    placeholder={newProviderType === 'anthropic' ? "https://api.anthropic.com" : "https://api.openai.com/v1"}
+                />
             </div>
             <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-slate-700 mb-1">Provider API Key(s)</label>

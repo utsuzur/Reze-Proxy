@@ -308,6 +308,97 @@ app.post('/api/admin/login', async (req, res) => {
  res.json({ ok: true });
 });
 
+// --- Format Conversion Helpers ---
+
+function convertOpenAIToAnthropic(body: any, modelId: string) {
+  const { messages, stream, max_tokens, temperature, top_p, stop } = body;
+  
+  // Extract system message
+  let system = "";
+  const filteredMessages = messages.filter((m: any) => {
+    if (m.role === 'system') {
+      system = m.content;
+      return false;
+    }
+    return true;
+  });
+
+  return {
+    model: modelId,
+    messages: filteredMessages,
+    system: system || undefined,
+    max_tokens: max_tokens || 4096, // Anthropic requires max_tokens
+    temperature: temperature,
+    top_p: top_p,
+    stop_sequences: Array.isArray(stop) ? stop : (stop ? [stop] : undefined),
+    stream
+  };
+}
+
+function convertAnthropicToOpenAI(anthropicRes: any, modelId: string) {
+    return {
+        id: anthropicRes.id,
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: modelId,
+        choices: [
+            {
+                index: 0,
+                message: {
+                    role: "assistant",
+                    content: anthropicRes.content[0].text
+                },
+                finish_reason: anthropicRes.stop_reason === "end_turn" ? "stop" : anthropicRes.stop_reason
+            }
+        ],
+        usage: {
+            prompt_tokens: anthropicRes.usage.input_tokens,
+            completion_tokens: anthropicRes.usage.output_tokens,
+            total_tokens: anthropicRes.usage.input_tokens + anthropicRes.usage.output_tokens
+        }
+    };
+}
+
+function convertAnthropicToOpenAIRequest(body: any) {
+    const { model, messages, system, max_tokens, stop_sequences, stream, temperature, top_p } = body;
+    
+    const openaiMessages = [...messages];
+    if (system) {
+        openaiMessages.unshift({ role: 'system', content: system });
+    }
+
+    return {
+        model,
+        messages: openaiMessages,
+        max_tokens,
+        stop: stop_sequences,
+        stream,
+        temperature,
+        top_p
+    };
+}
+
+function convertOpenAIToAnthropicResponse(openaiRes: any, modelId: string) {
+    return {
+        id: openaiRes.id || "msg_" + Math.random().toString(36).substring(7),
+        type: "message",
+        role: "assistant",
+        model: modelId,
+        content: [
+            {
+                type: "text",
+                text: openaiRes.choices?.[0]?.message?.content || ""
+            }
+        ],
+        stop_reason: openaiRes.choices?.[0]?.finish_reason === "stop" ? "end_turn" : (openaiRes.choices?.[0]?.finish_reason || "end_turn"),
+        stop_sequence: null,
+        usage: {
+            input_tokens: openaiRes.usage?.prompt_tokens || 0,
+            output_tokens: openaiRes.usage?.completion_tokens || 0
+        }
+    };
+}
+
 app.get('/api/admin/me', requireAdmin, async (req, res) => {
  try {
    const session = (req as any).adminSession as AdminSessionRow;
@@ -364,7 +455,7 @@ app.post('/api/admin/logout-all', requireAdmin, async (req, res) => {
  */
 app.get('/api/public/providers', (req, res) => {
   db.all(
-    `SELECT DISTINCT p.id, p.name
+    `SELECT DISTINCT p.id, p.name, p.type
      FROM providers p
      JOIN models m ON m.providerId = p.id
      WHERE m.isActive = 1
@@ -393,6 +484,48 @@ app.get('/api/public/models', (req, res) => {
     }));
     res.json(formatted);
   });
+});
+
+app.post('/api/admin/fetch-models', requireAdmin, async (req, res) => {
+    const { url, key, type } = req.body;
+    if (!url) return res.status(400).json({ error: "URL is required" });
+
+    try {
+        const cleanBase = url.replace(/\/+$/, '');
+        let fetchUrl = '';
+        
+        if (type === 'anthropic') {
+            const baseWithoutV1 = cleanBase.endsWith('/v1') ? cleanBase.slice(0, -3) : cleanBase;
+            fetchUrl = `${baseWithoutV1}/v1/models`;
+        } else {
+            fetchUrl = `${cleanBase}/models`;
+        }
+        
+        const headers: any = {
+            'Accept': 'application/json'
+        };
+
+        if (key) {
+            if (type === 'anthropic') {
+                headers['x-api-key'] = key;
+                headers['anthropic-version'] = '2023-06-01';
+            } else {
+                headers['Authorization'] = `Bearer ${key}`;
+            }
+        }
+
+        const response = await fetch(fetchUrl, { headers });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Provider returned ${response.status}: ${errorText || response.statusText}`);
+        }
+
+        const data = await response.json();
+        res.json(data);
+    } catch (e: any) {
+        console.error("Fetch models error:", e);
+        res.status(500).json({ error: e.message || "Failed to fetch models" });
+    }
 });
 
 // --- Providers (Admin) ---
@@ -686,12 +819,18 @@ const modelCache = new NodeCache({ stdTTL: 300 }); // Cache model configs for 5 
 
 // dbGet helper is defined near the top for reuse (admin auth + proxy)
 
-app.post('/v1/chat/completions', async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+// --- OpenAI Compatible Proxy ---
+
+async function handleChatRequest(req: express.Request, res: express.Response, inputFormat: 'openai' | 'anthropic' = 'openai') {
+  const authHeader = req.headers.authorization || (inputFormat === 'anthropic' ? req.headers['x-api-key'] : undefined);
+  if (!authHeader || (typeof authHeader === 'string' && !authHeader.startsWith('Bearer ') && inputFormat === 'openai')) {
     return res.status(401).json({ error: { message: "Missing or invalid Authorization header", type: "invalid_request_error" } });
   }
-  const token = authHeader.split(' ')[1];
+  
+  let token = "";
+  if (typeof authHeader === 'string') {
+      token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
+  }
 
   try {
       // 1. Get Token (Cache -> DB)
@@ -731,20 +870,6 @@ app.post('/v1/chat/completions', async (req, res) => {
              return res.status(429).json({ error: { message: "Rate limit exceeded. Please wait a minute." } });
          }
     }
-
-    // Update Rate Limit Counters (Async - don't block response)
-    // We also update the cache to reflect the new counts immediately if we were using it for state, 
-    // but here we just fire-and-forget the DB update. Ideally, a distributed cache (Redis) would handle increments.
-    // For now, local cache might get stale regarding EXACT counts, but that's a trade-off for speed.
-    // To ensure strict limits, we might want to invalidate the cache on hit, but that defeats the purpose.
-    // We'll proceed with DB updates and just accept that the cached 'row' might lag slightly on counters 
-    // within the 60s window. *However*, for strict rate limiting, we should probably fetch the latest counters 
-    // or store counters separately. For this simple implementation, we'll stick to the cached row 
-    // but invalidating it might be safer if we want strict enforcement.
-    // IMPROVEMENT: Let's invalidate the token cache on every request so the next request fetches fresh counters.
-    // This keeps auth fast (if we split it) but here counters are on the same row.
-    // Optimization: Only invalidate if we are close to a limit? 
-    // Let's simple invalidate for now to be safe with limits, OR just update the in-memory object too.
     
     // Increment in-memory to reflect immediate change (optimistic)
     if (row.lastRequestDate !== todayStr) { row.requestsToday = 1; row.lastRequestDate = todayStr; }
@@ -763,7 +888,12 @@ app.post('/v1/chat/completions', async (req, res) => {
         WHERE id = ?`, 
         [todayStr, todayStr, currentMinuteStr, currentMinuteStr, row.id]);
 
-    const modelId = req.body.model;
+    let body = req.body;
+    if (inputFormat === 'anthropic') {
+        body = convertAnthropicToOpenAIRequest(body);
+    }
+
+    const modelId = body.model;
     if (!modelId) return res.status(400).json({ error: { message: "Model is required" } });
 
     // 2. Get Model (Cache -> DB)
@@ -776,7 +906,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             const modelName = parts.slice(1).join('/');
             
             modelRow = await dbGet(
-                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.removeTopP, p.lastUsedKeyIndex 
+                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.type as providerType, p.removeTopP, p.lastUsedKeyIndex 
                  FROM models m 
                  JOIN providers p ON m.providerId = p.id 
                  WHERE p.name = ? AND m.name = ? AND m.isActive = 1 LIMIT 1`, 
@@ -787,7 +917,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         // Fallback: Try searching by model name directly (legacy/ambiguous mode)
         if (!modelRow) {
             modelRow = await dbGet(
-                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.removeTopP, p.lastUsedKeyIndex 
+                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.type as providerType, p.removeTopP, p.lastUsedKeyIndex 
                  FROM models m 
                  JOIN providers p ON m.providerId = p.id 
                  WHERE m.name = ? AND m.isActive = 1 LIMIT 1`, 
@@ -809,14 +939,12 @@ app.post('/v1/chat/completions', async (req, res) => {
         accessibleModels = []; 
       }
       
-      // If list is empty, access to all models is assumed
-      // We check against modelRow.id (the persistent ID), not modelId (the mutable name)
       if (accessibleModels.length > 0 && !accessibleModels.includes(modelRow.id)) {
          return res.status(403).json({ error: { message: "Model access denied for this token" } });
       }
 
       // Check Input Token Limit
-      const messages = req.body.messages || [];
+      const messages = body.messages || [];
       const inputContent = messages.map((m: any) => m.content || '').join('\n');
       const currentInputTokens = countTokens(inputContent, modelId);
 
@@ -853,24 +981,41 @@ app.post('/v1/chat/completions', async (req, res) => {
 
           try {
             // Prepare Request
-            const providerUrl = modelRow.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+            const isAnthropic = modelRow.providerType === 'anthropic';
+            const cleanBase = modelRow.baseUrl.replace(/\/+$/, '');
+            let providerUrl = '';
+            
+            if (isAnthropic) {
+                // For Anthropic, we need /v1/messages. Ensure we don't double /v1
+                const baseWithoutV1 = cleanBase.endsWith('/v1') ? cleanBase.slice(0, -3) : cleanBase;
+                providerUrl = `${baseWithoutV1}/v1/messages`;
+            } else {
+                // For OpenAI compatible, we expect the user to provide the full base (e.g. .../v1)
+                providerUrl = `${cleanBase}/chat/completions`;
+            }
+                
             const headers: any = {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${currentKey}`
+              'Content-Type': 'application/json'
             };
 
-            const isStreaming = req.body.stream === true;
+            if (isAnthropic) {
+                headers['x-api-key'] = currentKey;
+                headers['anthropic-version'] = '2023-06-01';
+            } else {
+                headers['Authorization'] = `Bearer ${currentKey}`;
+            }
 
-            // Enforce max output tokens from model configuration
-            // This acts as a hard cap: strict minimum of (user_requested, configured_limit)
-            let finalMaxTokens = req.body.max_tokens;
+            const isStreaming = body.stream === true;
+
+            // Enforce max output tokens
+            let finalMaxTokens = body.max_tokens;
             if (modelRow.maxOutputTokens) {
               if (!finalMaxTokens || finalMaxTokens > modelRow.maxOutputTokens) {
                 finalMaxTokens = modelRow.maxOutputTokens;
               }
             }
             
-            const requestBody = { ...req.body, model: modelRow.id };
+            let requestBody = { ...body, model: modelRow.id };
 
             if (finalMaxTokens) {
               requestBody.max_tokens = finalMaxTokens;
@@ -878,6 +1023,10 @@ app.post('/v1/chat/completions', async (req, res) => {
 
             if (modelRow.removeTopP) {
                 delete requestBody.top_p;
+            }
+
+            if (isAnthropic) {
+                requestBody = convertOpenAIToAnthropic(requestBody, modelRow.id);
             }
 
             // Proxy Request
@@ -891,45 +1040,25 @@ app.post('/v1/chat/completions', async (req, res) => {
                const errorText = await proxyRes.text();
                console.error(`Provider Key ${keyIndex} Error (${proxyRes.status}):`, errorText);
 
-               // Log to DB (Admin only)
                db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
                     [row.id, modelId, modelRow.providerId, 'provider_error', `Key Index ${keyIndex} - Status ${proxyRes.status}: ${errorText}`, new Date().toISOString()]);
 
-               // If it's not the last key, try the next one
-               if (currentAttempt < apiKeys.length) {
-                   continue;
-               }
+               if (currentAttempt < apiKeys.length) continue;
 
-               // All keys failed
                return res.json({
                   id: "chatcmpl-error",
                   object: "chat.completion",
                   created: Math.floor(Date.now() / 1000),
                   model: modelId,
-                  choices: [
-                    {
-                      "index": 0,
-                      "message": {
-                        "role": "assistant",
-                        "content": "No API Key can be used to make this request"
-                      },
-                      "finish_reason": "stop"
-                    }
-                  ],
-                  usage: {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0
-                  }
+                  choices: [{ index: 0, message: { role: "assistant", content: "No API Key can be used to make this request" }, finish_reason: "stop" }],
+                  usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
                });
             }
 
-            // Success! Update rotation index
             db.run('UPDATE providers SET lastUsedKeyIndex = ? WHERE id = ?', [keyIndex, modelRow.providerId]);
             success = true;
 
             if (isStreaming) {
-                // Forward headers for SSE
                 res.setHeader('Content-Type', 'text/event-stream');
                 res.setHeader('Cache-Control', 'no-cache');
                 res.setHeader('Connection', 'keep-alive');
@@ -938,49 +1067,115 @@ app.post('/v1/chat/completions', async (req, res) => {
                     // @ts-ignore
                     const reader = proxyRes.body.getReader();
                     const decoder = new TextDecoder();
-                    
                     let accumulatedOutput = "";
 
                     try {
                         while (true) {
                             const { done, value } = await reader.read();
                             if (done) break;
-                            
                             const chunk = decoder.decode(value, { stream: true });
-                            res.write(chunk);
                             
-                            // Accumulate for token counting (approximate)
-                            const lines = chunk.split('\n');
-                            for (const line of lines) {
-                                if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-                                    try {
-                                        const json = JSON.parse(line.substring(6));
-                                        if (json.choices?.[0]?.delta?.content) {
-                                            accumulatedOutput += json.choices[0].delta.content;
+                            if (isAnthropic) {
+                                const lines = chunk.split('\n');
+                                for (const line of lines) {
+                                    if (line.startsWith('data: ')) {
+                                        try {
+                                            const dataStr = line.substring(6);
+                                            if (dataStr === '[DONE]') {
+                                                if (inputFormat === 'openai') res.write('data: [DONE]\n\n');
+                                                continue;
+                                            }
+                                            const anthropicEvent = JSON.parse(dataStr);
+                                            
+                                            if (inputFormat === 'anthropic') {
+                                                res.write(line + '\n\n'); // Pass through
+                                                if (anthropicEvent.type === 'content_block_delta') {
+                                                    accumulatedOutput += anthropicEvent.delta.text || "";
+                                                }
+                                            } else {
+                                                // Convert to OpenAI
+                                                let openaiChunk = null;
+                                                if (anthropicEvent.type === 'content_block_delta') {
+                                                    const content = anthropicEvent.delta.text || "";
+                                                    accumulatedOutput += content;
+                                                    openaiChunk = {
+                                                        id: "anthropic-msg",
+                                                        object: "chat.completion.chunk",
+                                                        created: Math.floor(Date.now() / 1000),
+                                                        model: modelId,
+                                                        choices: [{ index: 0, delta: { content }, finish_reason: null }]
+                                                    };
+                                                } else if (anthropicEvent.type === 'message_stop') {
+                                                    openaiChunk = {
+                                                        id: "anthropic-msg",
+                                                        object: "chat.completion.chunk",
+                                                        created: Math.floor(Date.now() / 1000),
+                                                        model: modelId,
+                                                        choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
+                                                    };
+                                                }
+                                                if (openaiChunk) res.write(`data: ${JSON.stringify(openaiChunk)}\n\n`);
+                                            }
+                                        } catch (e) {}
+                                    }
+                                }
+                            } else {
+                                // Destination is OpenAI
+                                if (inputFormat === 'anthropic') {
+                                    // Convert OpenAI SSE to Anthropic SSE
+                                    const lines = chunk.split('\n');
+                                    for (const line of lines) {
+                                        if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                                            try {
+                                                const json = JSON.parse(line.substring(6));
+                                                const content = json.choices?.[0]?.delta?.content || "";
+                                                if (content) {
+                                                    accumulatedOutput += content;
+                                                    const anthropicChunk = {
+                                                        type: "content_block_delta",
+                                                        index: 0,
+                                                        delta: { type: "text_delta", text: content }
+                                                    };
+                                                    res.write(`data: ${JSON.stringify(anthropicChunk)}\n\n`);
+                                                }
+                                                
+                                                if (json.choices?.[0]?.finish_reason) {
+                                                    const anthropicStop = { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 0 } };
+                                                    res.write(`data: ${JSON.stringify(anthropicStop)}\n\n`);
+                                                    res.write(`data: {"type": "message_stop"}\n\n`);
+                                                }
+                                            } catch (e) {}
+                                        } else if (line === 'data: [DONE]') {
+                                            // Handled in finally
                                         }
-                                    } catch (e) {
-                                        // ignore parse errors for partial chunks
+                                    }
+                                } else {
+                                    res.write(chunk);
+                                    
+                                    const lines = chunk.split('\n');
+                                    for (const line of lines) {
+                                        if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                                            try {
+                                                const json = JSON.parse(line.substring(6));
+                                                if (json.choices?.[0]?.delta?.content) {
+                                                    accumulatedOutput += json.choices[0].delta.content;
+                                                }
+                                            } catch (e) {}
+                                        }
                                     }
                                 }
                             }
                         }
                     } catch (error) {
-                        console.error("Streaming error:", error);
                         res.end();
                     } finally {
+                        if (inputFormat === 'openai' && !isAnthropic) res.write('data: [DONE]\n\n');
                         res.end();
                         
-                        // Count tokens after stream finishes
                         const inputTokens = countTokens(inputContent, modelId);
                         const outputTokens = countTokens(accumulatedOutput, modelId);
-                        
-                        console.log(`[${new Date().toISOString()}] Stream Completion: Model=${modelId} | User=${row.name} | Input=${inputTokens} | Output=${outputTokens}`);
-                        
-                        db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', 
-                            [inputTokens, outputTokens, row.id]);
-
-                        db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)',
-                            [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
+                        db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', [inputTokens, outputTokens, row.id]);
+                        db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)', [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
                     }
                 } else {
                     res.end();
@@ -988,74 +1183,41 @@ app.post('/v1/chat/completions', async (req, res) => {
                 return;
             }
 
-            // Non-streaming handling
             const responseText = await proxyRes.text();
-
             let data;
             try {
                 data = JSON.parse(responseText);
+                if (isAnthropic && inputFormat === 'openai') {
+                    data = convertAnthropicToOpenAI(data, modelId);
+                } else if (!isAnthropic && inputFormat === 'anthropic') {
+                    data = convertOpenAIToAnthropicResponse(data, modelId);
+                }
             } catch (e) {
-                console.error("Failed to parse provider response as JSON:", responseText);
                 return res.status(502).json({ error: { message: "Invalid JSON response from provider" } });
             }
             
-            // Count Tokens
             const inputTokens = countTokens(inputContent, modelId);
-            const outputContent = data.choices?.[0]?.message?.content || '';
+            const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
             const outputTokens = countTokens(outputContent, modelId);
 
-            // Log Request
-            console.log(`[${new Date().toISOString()}] Completion: Model=${modelId} | User=${row.name} (${token.substring(0,6)}...) | Input=${inputTokens} | Output=${outputTokens}`);
+            db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', [inputTokens, outputTokens, row.id]);
+            db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)', [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
 
-            // Update Usage
-            db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', 
-              [inputTokens, outputTokens, row.id]);
-
-            db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)',
-                [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
-
-            // Return Response
             return res.json(data);
 
           } catch (e: any) {
-            console.error(`Proxy Attempt ${currentAttempt} Error:`, e);
-            
-            // Log to DB (Admin only)
-            db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
-                [row.id, modelId, modelRow.providerId, 'server_error', `Key Index ${keyIndex} - ${e.message || String(e)}`, new Date().toISOString()]);
-
-            if (currentAttempt < apiKeys.length) {
-                continue;
-            }
-
-            return res.json({
-                id: "chatcmpl-error",
-                object: "chat.completion",
-                created: Math.floor(Date.now() / 1000),
-                model: modelId,
-                choices: [
-                {
-                    "index": 0,
-                    "message": {
-                    "role": "assistant",
-                    "content": "No API Key can be used to make this request"
-                    },
-                    "finish_reason": "stop"
-                }
-                ],
-                usage: {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0
-                }
-            });
+            db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)', [row.id, modelId, modelRow.providerId, 'server_error', `Key Index ${keyIndex} - ${e.message || String(e)}`, new Date().toISOString()]);
+            if (currentAttempt < apiKeys.length) continue;
+            return res.json({ error: { message: "All attempts failed" } });
           }
       }
   } catch (err: any) {
-      console.error("Server Error:", err);
       res.status(500).json({ error: { message: "Internal server error" } });
   }
-});
+}
+
+app.post('/v1/chat/completions', (req, res) => handleChatRequest(req, res, 'openai'));
+app.post('/v1/messages', (req, res) => handleChatRequest(req, res, 'anthropic'));
 
 // --- Static Frontend Serving ---
 const distPath = path.join(__dirname, '../dist');

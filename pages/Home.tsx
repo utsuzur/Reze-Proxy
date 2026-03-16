@@ -6,6 +6,7 @@ import { TokenChecker } from '../components/TokenChecker';
 type PublicProvider = {
   id: string;
   name: string;
+  type?: 'openai' | 'anthropic';
 };
 
 const CopyButton: React.FC<{ text: string }> = ({ text }) => {
@@ -175,7 +176,16 @@ const Home: React.FC = () => {
                                 {provider.name.charAt(0).toUpperCase()}
                             </div>
                             <div>
-                                <h3 className="font-semibold text-slate-800">{provider.name}</h3>
+                                <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+                                    {provider.name}
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-tight ${
+                                        provider.type === 'anthropic' 
+                                            ? 'bg-orange-100 text-orange-600 border border-orange-200' 
+                                            : 'bg-blue-100 text-blue-600 border border-blue-200'
+                                    }`}>
+                                        {provider.type === 'anthropic' ? 'Anthropic' : 'OpenAI'}
+                                    </span>
+                                </h3>
                                 <p className="text-sm text-slate-500">{modelCount} models available</p>
                             </div>
                         </div>
