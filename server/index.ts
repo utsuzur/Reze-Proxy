@@ -808,7 +808,7 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-import { countTokens } from './tokenService.ts';
+import { countTokens, countMessagesTokens } from './tokenService.ts';
 
 // --- OpenAI Compatible Proxy ---
 
@@ -981,7 +981,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       // Check Input Token Limit
       const messages = body.messages || [];
       const inputContent = messages.map((m: any) => m.content || '').join('\n');
-      const currentInputTokens = countTokens(inputContent, modelId);
+      const currentInputTokens = countMessagesTokens(messages, modelId);
 
       if (row.maxTokenUsage && row.maxTokenUsage > 0) {
         if ((row.inputTokens + row.outputTokens + currentInputTokens) > row.maxTokenUsage) {
@@ -1113,6 +1113,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                     const reader = proxyRes.body.getReader();
                     const decoder = new TextDecoder();
                     let accumulatedOutput = "";
+                    let streamUsage: { prompt_tokens?: number, completion_tokens?: number } = {};
 
                     try {
                         while (true) {
@@ -1132,6 +1133,14 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                             }
                                             const anthropicEvent = JSON.parse(dataStr);
                                             
+                                            if (anthropicEvent.type === 'message_start') {
+                                                streamUsage.prompt_tokens = anthropicEvent.message?.usage?.input_tokens;
+                                            } else if (anthropicEvent.type === 'message_delta') {
+                                                if (anthropicEvent.usage?.output_tokens) {
+                                                    streamUsage.completion_tokens = anthropicEvent.usage.output_tokens;
+                                                }
+                                            }
+
                                             if (inputFormat === 'anthropic') {
                                                 res.write(line + '\n\n'); // Pass through
                                                 if (anthropicEvent.type === 'content_block_delta') {
@@ -1173,6 +1182,12 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                         if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                                             try {
                                                 const json = JSON.parse(line.substring(6));
+                                                
+                                                if (json.usage) {
+                                                    streamUsage.prompt_tokens = json.usage.prompt_tokens;
+                                                    streamUsage.completion_tokens = json.usage.completion_tokens;
+                                                }
+
                                                 const content = json.choices?.[0]?.delta?.content || "";
                                                 if (content) {
                                                     accumulatedOutput += content;
@@ -1202,6 +1217,10 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                         if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                                             try {
                                                 const json = JSON.parse(line.substring(6));
+                                                if (json.usage) {
+                                                    streamUsage.prompt_tokens = json.usage.prompt_tokens;
+                                                    streamUsage.completion_tokens = json.usage.completion_tokens;
+                                                }
                                                 if (json.choices?.[0]?.delta?.content) {
                                                     accumulatedOutput += json.choices[0].delta.content;
                                                 }
@@ -1217,8 +1236,8 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                         if (inputFormat === 'openai' && !isAnthropic) res.write('data: [DONE]\n\n');
                         res.end();
                         
-                        const inputTokens = countTokens(inputContent, modelId);
-                        const outputTokens = countTokens(accumulatedOutput, modelId);
+                        const inputTokens = streamUsage.prompt_tokens || currentInputTokens;
+                        const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId);
                         const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
                         db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ?, totalCost = totalCost + ? WHERE id = ?', [inputTokens, outputTokens, cost, row.id]);
@@ -1243,9 +1262,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 return res.status(502).json({ error: { message: "Invalid JSON response from provider" } });
             }
             
-            const inputTokens = countTokens(inputContent, modelId);
+            const inputTokens = data.usage?.prompt_tokens || currentInputTokens;
             const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
-            const outputTokens = countTokens(outputContent, modelId);
+            const outputTokens = data.usage?.completion_tokens || countTokens(outputContent, modelId);
             const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
             db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ?, totalCost = totalCost + ? WHERE id = ?', [inputTokens, outputTokens, cost, row.id]);
