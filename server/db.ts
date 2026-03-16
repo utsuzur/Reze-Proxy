@@ -34,6 +34,9 @@ function initializeTables() {
     name TEXT NOT NULL,
     maxInputTokens INTEGER,
     maxOutputTokens INTEGER,
+    pricingModelId TEXT,
+    inputPricePer1k REAL DEFAULT 0,
+    outputPricePer1k REAL DEFAULT 0,
     isActive INTEGER DEFAULT 1,
     PRIMARY KEY (id, providerId),
     FOREIGN KEY(providerId) REFERENCES providers(id) ON DELETE CASCADE
@@ -49,6 +52,9 @@ function initializeTables() {
     usageCount INTEGER DEFAULT 0,
     inputTokens INTEGER DEFAULT 0,
     outputTokens INTEGER DEFAULT 0,
+    totalCost REAL DEFAULT 0,
+    maxTokenUsage INTEGER DEFAULT NULL,
+    maxCostUsage REAL DEFAULT NULL,
     isActive INTEGER DEFAULT 1
   )`);
 
@@ -58,7 +64,7 @@ function initializeTables() {
   db.run("CREATE INDEX IF NOT EXISTS idx_models_providerId ON models(providerId)");
   db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_providers_name ON providers(name)");
 
-  // Migrations for Rate Limiting
+  // Migrations
   const columnsToAdd = [
     "ALTER TABLE tokens ADD COLUMN maxRequestsPerDay INTEGER DEFAULT NULL",
     "ALTER TABLE tokens ADD COLUMN maxRequestsPerMinute INTEGER DEFAULT NULL",
@@ -66,13 +72,20 @@ function initializeTables() {
     "ALTER TABLE tokens ADD COLUMN lastRequestDate TEXT DEFAULT NULL",
     "ALTER TABLE tokens ADD COLUMN requestsThisMinute INTEGER DEFAULT 0",
     "ALTER TABLE tokens ADD COLUMN lastRequestMinute TEXT DEFAULT NULL",
-    "ALTER TABLE providers ADD COLUMN lastUsedKeyIndex INTEGER DEFAULT 0"
+    "ALTER TABLE tokens ADD COLUMN maxTokenUsage INTEGER DEFAULT NULL",
+    "ALTER TABLE tokens ADD COLUMN maxCostUsage REAL DEFAULT NULL",
+    "ALTER TABLE tokens ADD COLUMN totalCost REAL DEFAULT 0",
+    "ALTER TABLE providers ADD COLUMN lastUsedKeyIndex INTEGER DEFAULT 0",
+    "ALTER TABLE models ADD COLUMN pricingModelId TEXT DEFAULT NULL",
+    "ALTER TABLE models ADD COLUMN inputPricePer1k REAL DEFAULT 0",
+    "ALTER TABLE models ADD COLUMN outputPricePer1k REAL DEFAULT 0",
+    "ALTER TABLE request_logs ADD COLUMN cost REAL DEFAULT 0"
   ];
 
   columnsToAdd.forEach(sql => {
     db.run(sql, (err) => {
       if (err) {
-        if (!err.message.includes("duplicate column name")) {
+        if (!err.message.includes("duplicate column name") && !err.message.includes("no such table")) {
           console.error(`Migration failed: ${sql}`, err);
         }
       } else {
@@ -87,6 +100,7 @@ function initializeTables() {
     modelId TEXT NOT NULL,
     inputTokens INTEGER DEFAULT 0,
     outputTokens INTEGER DEFAULT 0,
+    cost REAL DEFAULT 0,
     timestamp TEXT NOT NULL,
     FOREIGN KEY(tokenId) REFERENCES tokens(id) ON DELETE CASCADE
   )`);

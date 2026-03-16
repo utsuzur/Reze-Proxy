@@ -5,6 +5,9 @@ export interface ModelConfig {
   maxInputTokens: number;
   maxOutputTokens: number;
   isActive: boolean;
+  pricingModelId?: string;
+  inputPricePer1k?: number;
+  outputPricePer1k?: number;
 }
 
 export interface Provider {
@@ -25,13 +28,28 @@ export interface UserToken {
   expiresAt: string | null;
   accessibleModelIds: string[]; // List of model IDs this token can access
   usageCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalCost: number;
   maxRequestsPerDay?: number;
   maxRequestsPerMinute?: number;
+  maxTokenUsage?: number;
+  maxCostUsage?: number; // Budget in USD
   isActive: boolean;
 }
 
 export interface AdminConfig {
   themeColor: string;
+}
+
+export interface RequestLog {
+  id: number;
+  tokenId: string;
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+  timestamp: string;
 }
 
 export interface ErrorLog {

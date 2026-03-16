@@ -22,8 +22,11 @@ interface TokenData {
   usageCount: number;
   inputTokens: number;
   outputTokens: number;
+  totalCost: number;
   requestsToday: number;
   maxRequestsPerDay: number | null;
+  maxTokenUsage: number | null;
+  maxCostUsage: number | null;
   remainingRequestsToday: number | null;
   isActive: boolean;
   logs: Log[];
@@ -137,8 +140,8 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
               
               {/* Token Info Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* Name Card */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Name Card ... same ... */}
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                   <div className="text-slate-500 text-sm mb-1">Token Name</div>
                   {isEditingName ? (
@@ -193,6 +196,23 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
                            out of {data.maxRequestsPerDay}
                        </div>
                    )}
+                </div>
+
+                {/* Budget Card */}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                   <div className="text-slate-500 text-sm mb-1">Budget Balance</div>
+                   <div className="font-semibold text-slate-800">
+                      {data.maxCostUsage ? (
+                          <span className={(data.totalCost / data.maxCostUsage) > 0.9 ? "text-red-500" : "text-green-600"}>
+                              ${(data.maxCostUsage - data.totalCost).toFixed(3)} left
+                          </span>
+                      ) : (
+                          <span className="text-green-600">Unlimited</span>
+                      )}
+                   </div>
+                   <div className="text-xs text-slate-400 mt-1">
+                      Spent: ${data.totalCost.toFixed(3)} {data.maxCostUsage ? `of $${data.maxCostUsage.toFixed(2)}` : ''}
+                   </div>
                 </div>
               </div>
 

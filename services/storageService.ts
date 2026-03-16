@@ -159,6 +159,18 @@ class StorageService {
       headers: { ...csrfHeaders() }
     });
   }
+
+  // --- Pricing ---
+  async getPricingData(): Promise<any[]> {
+    try {
+      const res = await fetch(`${API_URL}/admin/search-prices`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('Failed to fetch pricing');
+      return await res.json();
+    } catch (e) {
+      console.error(e);
+      return [];
+    }
+  }
 }
 
 export const storageService = new StorageService();

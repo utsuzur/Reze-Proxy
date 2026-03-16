@@ -3,6 +3,13 @@ import { Plus, Trash2, RefreshCw, Save, X, Globe, Check, Edit2, ChevronDown, Sea
 import { Provider, ModelConfig } from '../../types';
 import { storageService } from '../../services/storageService';
 
+interface PricingData {
+  id: string;
+  name: string;
+  inputPrice: number;
+  outputPrice: number;
+}
+
 const PRESETS = [
   { name: 'OpenAI', url: 'https://api.openai.com/v1', type: 'openai' },
   { name: 'Anthropic', url: 'https://api.anthropic.com', type: 'anthropic' },
@@ -21,6 +28,12 @@ const Offerings: React.FC = () => {
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   const [modelSearchQueries, setModelSearchQueries] = useState<Record<string, string>>({});
+  
+  // Pricing State
+  const [pricingData, setPricingData] = useState<PricingData[]>([]);
+  const [isPriceSearchOpen, setIsPriceSearchOpen] = useState(false);
+  const [priceSearchQuery, setPriceSearchQuery] = useState('');
+  const [activePriceSearchModel, setActivePriceSearchModel] = useState<{providerId: string, modelId: string} | null>(null);
   
   // Provider Form State
   const [newProviderName, setNewProviderName] = useState('');
@@ -42,6 +55,10 @@ const Offerings: React.FC = () => {
     setModels(await storageService.getModels());
     // Default all to expanded initially
     setExpandedProviders(new Set(loadedProviders.map(p => p.id)));
+    
+    // Fetch pricing data
+    const prices = await storageService.getPricingData();
+    setPricingData(prices);
   };
 
   const toggleProvider = (id: string) => {
@@ -131,14 +148,22 @@ const Offerings: React.FC = () => {
         if (fetchedModels.length > 0) {
              const newModelConfigs: ModelConfig[] = fetchedModels
                 .filter(mid => !models.some(m => m.id === mid && m.providerId === editingProviderId))
-                .map(modelId => ({
-                    id: modelId,
-                    name: modelId,
-                    providerId: editingProviderId,
-                    maxInputTokens: 4096,
-                    maxOutputTokens: 1024,
-                    isActive: true
-                }));
+                .map(modelId => {
+                    const normalized = normalizeModelId(modelId);
+                    const bestMatch = pricingData.find(p => p.id.toLowerCase().includes(normalized) || normalized.includes(p.id.split('/')[1]?.toLowerCase() || ''));
+                    
+                    return {
+                        id: modelId,
+                        name: modelId,
+                        providerId: editingProviderId,
+                        maxInputTokens: 4096,
+                        maxOutputTokens: 1024,
+                        pricingModelId: bestMatch?.id,
+                        inputPricePer1k: bestMatch?.inputPrice || 0,
+                        outputPricePer1k: bestMatch?.outputPrice || 0,
+                        isActive: true
+                    };
+                });
              if (newModelConfigs.length > 0) {
                  await storageService.saveModels(newModelConfigs);
              }
@@ -155,14 +180,22 @@ const Offerings: React.FC = () => {
             type: newProviderType
         };
 
-        const newModelConfigs: ModelConfig[] = fetchedModels.map(modelId => ({
-            id: modelId,
-            name: modelId,
-            providerId: newId,
-            maxInputTokens: 4096,
-            maxOutputTokens: 1024,
-            isActive: true
-        }));
+        const newModelConfigs: ModelConfig[] = fetchedModels.map(modelId => {
+            const normalized = normalizeModelId(modelId);
+            const bestMatch = pricingData.find(p => p.id.toLowerCase().includes(normalized) || normalized.includes(p.id.split('/')[1]?.toLowerCase() || ''));
+            
+            return {
+                id: modelId,
+                name: modelId,
+                providerId: newId,
+                maxInputTokens: 4096,
+                maxOutputTokens: 1024,
+                pricingModelId: bestMatch?.id,
+                inputPricePer1k: bestMatch?.inputPrice || 0,
+                outputPricePer1k: bestMatch?.outputPrice || 0,
+                isActive: true
+            };
+        });
 
         await storageService.saveProvider(provider);
         await storageService.saveModels(newModelConfigs);
@@ -209,6 +242,23 @@ const Offerings: React.FC = () => {
     const updated = { ...model, ...updates };
     await storageService.updateModel(updated);
     setModels(prev => prev.map(m => (m.id === updated.id && m.providerId === updated.providerId) ? updated : m));
+  };
+
+  const handlePriceSelect = async (model: ModelConfig, price: PricingData) => {
+      await handleUpdateModel(model, {
+          pricingModelId: price.id,
+          inputPricePer1k: price.inputPrice,
+          outputPricePer1k: price.outputPrice
+      });
+      setIsPriceSearchOpen(false);
+  };
+
+  const normalizeModelId = (id: string): string => {
+      return id.toLowerCase()
+        .replace(/[:\/]/g, '-')
+        .replace(/-(20\d\d|v\d+).*/g, '') // remove dates and versioning
+        .replace(/-(preview|latest|online|chat|default)/g, '')
+        .trim();
   };
 
   const handleBulkToggle = async (providerId: string, isActive: boolean) => {
@@ -547,6 +597,22 @@ const Offerings: React.FC = () => {
                                           />
                                       </div>
                                   </div>
+                                  <div className="flex items-center justify-between gap-3 bg-white p-2 rounded border border-slate-100">
+                                      <div className="flex-1 min-w-0">
+                                          <div className="text-[10px] text-slate-500 font-medium">IN: ${model.inputPricePer1k?.toFixed(4)} | OUT: ${model.outputPricePer1k?.toFixed(4)}</div>
+                                          <div className="text-[9px] text-reze-600 truncate">{model.pricingModelId || 'Unlinked'}</div>
+                                      </div>
+                                      <button 
+                                          onClick={() => {
+                                              setActivePriceSearchModel({providerId: model.providerId, modelId: model.id});
+                                              setPriceSearchQuery(normalizeModelId(model.id));
+                                              setIsPriceSearchOpen(true);
+                                          }}
+                                          className="p-1.5 bg-slate-50 text-slate-400 hover:text-reze-600 rounded"
+                                      >
+                                          <Search className="w-4 h-4" />
+                                      </button>
+                                  </div>
                                   <div className="flex justify-end">
                                       <button 
                                           onClick={() => handleUpdateModel(model, { isActive: !model.isActive })}
@@ -564,10 +630,11 @@ const Offerings: React.FC = () => {
                           <table className="w-full text-sm text-left">
                               <thead className="text-xs text-slate-500 bg-slate-50/50 uppercase">
                                   <tr>
-                                      <th className="px-4 py-3 rounded-l-lg w-1/3">Model ID</th>
+                                      <th className="px-4 py-3 rounded-l-lg w-1/4">Model ID</th>
                                       <th className="px-4 py-3 w-1/6">Max Input</th>
                                       <th className="px-4 py-3 w-1/6">Max Output</th>
-                                      <th className="px-4 py-3 rounded-r-lg text-right w-1/6">Status</th>
+                                      <th className="px-4 py-3 w-1/4">Pricing (per 1k)</th>
+                                      <th className="px-4 py-3 rounded-r-lg text-right w-1/12">Status</th>
                                   </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
@@ -600,6 +667,24 @@ const Offerings: React.FC = () => {
                                                   onChange={(e) => handleUpdateModel(model, { maxOutputTokens: parseInt(e.target.value) })}
                                               />
                                           </td>
+                                          <td className="px-4 py-3">
+                                              <div className="flex items-center gap-2">
+                                                  <div className="flex-1 min-w-0">
+                                                      <div className="text-[10px] text-slate-500 font-medium whitespace-nowrap">IN: ${model.inputPricePer1k?.toFixed(4)} | OUT: ${model.outputPricePer1k?.toFixed(4)}</div>
+                                                      <div className="text-[9px] text-reze-600 truncate" title={model.pricingModelId}>{model.pricingModelId || 'Unlinked'}</div>
+                                                  </div>
+                                                  <button 
+                                                    onClick={() => {
+                                                        setActivePriceSearchModel({providerId: model.providerId, modelId: model.id});
+                                                        setPriceSearchQuery(normalizeModelId(model.id));
+                                                        setIsPriceSearchOpen(true);
+                                                    }}
+                                                    className="p-1 text-slate-400 hover:text-reze-600 flex-shrink-0"
+                                                  >
+                                                      <Search className="w-3.5 h-3.5" />
+                                                  </button>
+                                              </div>
+                                          </td>
                                           <td className="px-4 py-3 text-right">
                                               <button 
                                                   onClick={() => handleUpdateModel(model, { isActive: !model.isActive })}
@@ -625,6 +710,73 @@ const Offerings: React.FC = () => {
             </div>
         )}
       </div>
+
+      {/* Price Search Modal */}
+      {isPriceSearchOpen && activePriceSearchModel && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[80vh]">
+                  <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                      <div>
+                        <h3 className="font-bold text-slate-800">Link Model Pricing</h3>
+                        <p className="text-xs text-slate-500">Search OpenRouter database for {activePriceSearchModel.modelId}</p>
+                      </div>
+                      <button onClick={() => setIsPriceSearchOpen(false)} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100">
+                          <X className="w-5 h-5" />
+                      </button>
+                  </div>
+                  
+                  <div className="p-4 border-b border-slate-100">
+                      <div className="relative">
+                          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
+                          <input 
+                              type="text" 
+                              autoFocus
+                              placeholder="Search by model name or provider..." 
+                              className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-reze-500 outline-none"
+                              value={priceSearchQuery}
+                              onChange={(e) => setPriceSearchQuery(e.target.value)}
+                          />
+                      </div>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-2">
+                      <div className="space-y-1">
+                          {pricingData.filter(p => 
+                              p.id.toLowerCase().includes(priceSearchQuery.toLowerCase()) || 
+                              p.name.toLowerCase().includes(priceSearchQuery.toLowerCase())
+                          ).slice(0, 50).map(price => (
+                              <button 
+                                  key={price.id}
+                                  onClick={() => {
+                                      const model = models.find(m => m.id === activePriceSearchModel.modelId && m.providerId === activePriceSearchModel.providerId);
+                                      if (model) handlePriceSelect(model, price);
+                                  }}
+                                  className="w-full text-left p-3 rounded-xl hover:bg-reze-50 group transition-colors flex justify-between items-center"
+                              >
+                                  <div className="min-w-0">
+                                      <div className="font-semibold text-slate-800 text-sm group-hover:text-reze-700 truncate">{price.name}</div>
+                                      <div className="text-[10px] text-slate-400 font-mono truncate">{price.id}</div>
+                                  </div>
+                                  <div className="text-right flex-shrink-0 ml-4">
+                                      <div className="text-[11px] font-bold text-slate-700">${price.inputPrice.toFixed(4)} <span className="text-[9px] text-slate-400 font-normal">/in</span></div>
+                                      <div className="text-[11px] font-bold text-slate-700">${price.outputPrice.toFixed(4)} <span className="text-[9px] text-slate-400 font-normal">/out</span></div>
+                                  </div>
+                              </button>
+                          ))}
+                          {pricingData.length === 0 && (
+                              <div className="py-12 text-center text-slate-400 italic">
+                                  Loading OpenRouter pricing database...
+                              </div>
+                          )}
+                      </div>
+                  </div>
+                  
+                  <div className="p-4 bg-slate-50 border-t border-slate-100 text-[10px] text-slate-500 italic">
+                      Prices are USD per 1,000 tokens. Data synced from OpenRouter.
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 };

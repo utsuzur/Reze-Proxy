@@ -486,6 +486,27 @@ app.get('/api/public/models', (req, res) => {
   });
 });
 
+app.get('/api/admin/search-prices', requireAdmin, async (req, res) => {
+    try {
+        const response = await fetch('https://openrouter.ai/api/v1/models');
+        if (!response.ok) throw new Error(`OpenRouter returned ${response.status}`);
+        const data = await response.json();
+        
+        // Return a simplified list for the frontend
+        const prices = data.data.map((m: any) => ({
+            id: m.id,
+            name: m.name,
+            inputPrice: parseFloat(m.pricing.prompt) * 1000, // Price per 1k tokens
+            outputPrice: parseFloat(m.pricing.completion) * 1000
+        }));
+        
+        res.json(prices);
+    } catch (e: any) {
+        console.error('Error fetching prices:', e);
+        res.status(500).json({ error: "Failed to fetch pricing data from OpenRouter" });
+    }
+});
+
 app.post('/api/admin/fetch-models', requireAdmin, async (req, res) => {
     const { url, key, type } = req.body;
     if (!url) return res.status(400).json({ error: "URL is required" });
@@ -611,11 +632,11 @@ app.get('/api/models', requireAdmin, (req, res) => {
 app.post('/api/models', requireAdmin, (req, res) => {
   const models = Array.isArray(req.body) ? req.body : [req.body];
   
-  const stmt = db.prepare('INSERT OR REPLACE INTO models (id, providerId, name, maxInputTokens, maxOutputTokens, isActive) VALUES (?, ?, ?, ?, ?, ?)');
+  const stmt = db.prepare('INSERT OR REPLACE INTO models (id, providerId, name, maxInputTokens, maxOutputTokens, pricingModelId, inputPricePer1k, outputPricePer1k, isActive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
   
   db.serialize(() => {
     models.forEach((m: any) => {
-        stmt.run(m.id, m.providerId, m.name, m.maxInputTokens, m.maxOutputTokens, m.isActive ? 1 : 0);
+        stmt.run(m.id, m.providerId, m.name, m.maxInputTokens, m.maxOutputTokens, m.pricingModelId, m.inputPricePer1k || 0, m.outputPricePer1k || 0, m.isActive ? 1 : 0);
     });
     stmt.finalize((err) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -626,8 +647,8 @@ app.post('/api/models', requireAdmin, (req, res) => {
 
 app.put('/api/models', requireAdmin, (req, res) => {
     const m = req.body;
-    db.run('UPDATE models SET name = ?, maxInputTokens = ?, maxOutputTokens = ?, isActive = ? WHERE id = ? AND providerId = ?',
-        [m.name, m.maxInputTokens, m.maxOutputTokens, m.isActive ? 1 : 0, m.id, m.providerId],
+    db.run('UPDATE models SET name = ?, maxInputTokens = ?, maxOutputTokens = ?, pricingModelId = ?, inputPricePer1k = ?, outputPricePer1k = ?, isActive = ? WHERE id = ? AND providerId = ?',
+        [m.name, m.maxInputTokens, m.maxOutputTokens, m.pricingModelId, m.inputPricePer1k || 0, m.outputPricePer1k || 0, m.isActive ? 1 : 0, m.id, m.providerId],
         function(err) {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ updated: this.changes });
@@ -658,9 +679,9 @@ app.get('/api/tokens', requireAdmin, (req, res) => {
 });
 
 app.post('/api/tokens', requireAdmin, (req, res) => {
-  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute } = req.body;
-  db.run('INSERT INTO tokens (id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, name, token, createdAt, expiresAt, JSON.stringify(accessibleModelIds), usageCount, isActive !== undefined ? (isActive ? 1 : 0) : 1, maxRequestsPerDay, maxRequestsPerMinute],
+  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage } = req.body;
+  db.run('INSERT INTO tokens (id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, name, token, createdAt, expiresAt, JSON.stringify(accessibleModelIds), usageCount, isActive !== undefined ? (isActive ? 1 : 0) : 1, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage],
     function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json(req.body);
@@ -669,19 +690,19 @@ app.post('/api/tokens', requireAdmin, (req, res) => {
 });
 
 app.put('/api/tokens', requireAdmin, (req, res) => {
-  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute } = req.body;
+  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage } = req.body;
   
   if (token) {
-    db.run('UPDATE tokens SET name = ?, token = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ?, maxRequestsPerDay = ?, maxRequestsPerMinute = ? WHERE id = ?',
-      [name, token, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, maxRequestsPerDay, maxRequestsPerMinute, id],
+    db.run('UPDATE tokens SET name = ?, token = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ?, maxRequestsPerDay = ?, maxRequestsPerMinute = ?, maxTokenUsage = ?, maxCostUsage = ? WHERE id = ?',
+      [name, token, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, id],
       function(err) {
           if (err) return res.status(500).json({ error: err.message });
           res.json({ updated: this.changes });
       }
     );
   } else {
-    db.run('UPDATE tokens SET name = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ?, maxRequestsPerDay = ?, maxRequestsPerMinute = ? WHERE id = ?',
-      [name, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, maxRequestsPerDay, maxRequestsPerMinute, id],
+    db.run('UPDATE tokens SET name = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ?, maxRequestsPerDay = ?, maxRequestsPerMinute = ?, maxTokenUsage = ?, maxCostUsage = ? WHERE id = ?',
+      [name, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, id],
       function(err) {
           if (err) return res.status(500).json({ error: err.message });
           res.json({ updated: this.changes });
@@ -857,6 +878,20 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     const todayStr = now.toISOString().split('T')[0];
     const currentMinuteStr = now.toISOString().slice(0, 16);
 
+    // Token Usage Limit
+    if (row.maxTokenUsage && row.maxTokenUsage > 0) {
+        if ((row.inputTokens + row.outputTokens) >= row.maxTokenUsage) {
+            return res.status(403).json({ error: { message: "Overall token usage limit reached." } });
+        }
+    }
+
+    // Budget Limit
+    if (row.maxCostUsage && row.maxCostUsage > 0) {
+        if (row.totalCost >= row.maxCostUsage) {
+            return res.status(403).json({ error: { message: "Budget limit reached. Please contact admin to increase balance." } });
+        }
+    }
+
     // Daily Limit
     if (row.maxRequestsPerDay && row.maxRequestsPerDay > 0) {
         if (row.lastRequestDate === todayStr && row.requestsToday >= row.maxRequestsPerDay) {
@@ -947,6 +982,16 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       const messages = body.messages || [];
       const inputContent = messages.map((m: any) => m.content || '').join('\n');
       const currentInputTokens = countTokens(inputContent, modelId);
+
+      if (row.maxTokenUsage && row.maxTokenUsage > 0) {
+        if ((row.inputTokens + row.outputTokens + currentInputTokens) > row.maxTokenUsage) {
+            return res.status(403).json({ 
+                error: { 
+                    message: `Request would exceed the token usage limit. Current: ${row.inputTokens + row.outputTokens}, This Request: ${currentInputTokens}, Max: ${row.maxTokenUsage}`
+                } 
+            });
+        }
+      }
 
       if (modelRow.maxInputTokens && currentInputTokens > modelRow.maxInputTokens) {
         return res.status(400).json({ 
@@ -1174,8 +1219,10 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                         
                         const inputTokens = countTokens(inputContent, modelId);
                         const outputTokens = countTokens(accumulatedOutput, modelId);
-                        db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', [inputTokens, outputTokens, row.id]);
-                        db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)', [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
+                        const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
+
+                        db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ?, totalCost = totalCost + ? WHERE id = ?', [inputTokens, outputTokens, cost, row.id]);
+                        db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, cost, timestamp) VALUES (?, ?, ?, ?, ?, ?)', [row.id, modelId, inputTokens, outputTokens, cost, new Date().toISOString()]);
                     }
                 } else {
                     res.end();
@@ -1199,9 +1246,10 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             const inputTokens = countTokens(inputContent, modelId);
             const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
             const outputTokens = countTokens(outputContent, modelId);
+            const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
-            db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ? WHERE id = ?', [inputTokens, outputTokens, row.id]);
-            db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, timestamp) VALUES (?, ?, ?, ?, ?)', [row.id, modelId, inputTokens, outputTokens, new Date().toISOString()]);
+            db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ?, totalCost = totalCost + ? WHERE id = ?', [inputTokens, outputTokens, cost, row.id]);
+            db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, cost, timestamp) VALUES (?, ?, ?, ?, ?, ?)', [row.id, modelId, inputTokens, outputTokens, cost, new Date().toISOString()]);
 
             return res.json(data);
 
