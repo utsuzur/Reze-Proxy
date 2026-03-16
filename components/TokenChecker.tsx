@@ -12,6 +12,7 @@ interface Log {
   modelId: string;
   inputTokens: number;
   outputTokens: number;
+  cost: number;
   timestamp: string;
 }
 
@@ -87,6 +88,7 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
     time: new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     Input: log.inputTokens,
     Output: log.outputTokens,
+    Cost: log.cost,
     Model: log.modelId
   })) : [];
 
@@ -141,7 +143,7 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
               
               {/* Token Info Cards */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                {/* Name Card ... same ... */}
+                {/* Name Card */}
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                   <div className="text-slate-500 text-sm mb-1">Token Name</div>
                   {isEditingName ? (
@@ -220,20 +222,26 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
               <div className="bg-white border border-slate-100 rounded-xl p-6 shadow-sm">
                 <h3 className="text-lg font-semibold text-slate-800 mb-6 flex items-center gap-2">
                     <BarChart2 className="w-5 h-5 text-reze-500" />
-                    Recent Activity (Token Usage)
+                    Recent Activity (Token Usage & Cost)
                 </h3>
                 <div className="h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={graphData}>
                       <XAxis dataKey="time" fontSize={12} tickLine={false} axisLine={false} />
-                      <YAxis fontSize={12} tickLine={false} axisLine={false} />
+                      <YAxis yAxisId="left" fontSize={12} tickLine={false} axisLine={false} />
+                      <YAxis yAxisId="right" orientation="right" fontSize={12} tickLine={false} axisLine={false} />
                       <Tooltip 
                         contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                         cursor={{ fill: '#f1f5f9' }}
+                        formatter={(value: any, name: string) => [
+                          name === 'Cost' ? `$${parseFloat(value).toFixed(4)}` : value,
+                          name
+                        ]}
                       />
                       <Legend />
-                      <Bar dataKey="Input" fill="#94a3b8" radius={[4, 4, 0, 0]} stackId="a" />
-                      <Bar dataKey="Output" fill="#8b5cf6" radius={[4, 4, 0, 0]} stackId="a" />
+                      <Bar yAxisId="left" dataKey="Input" fill="#94a3b8" radius={[4, 4, 0, 0]} stackId="a" />
+                      <Bar yAxisId="left" dataKey="Output" fill="#8b5cf6" radius={[4, 4, 0, 0]} stackId="a" />
+                      <Bar yAxisId="right" dataKey="Cost" fill="#10b981" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -253,6 +261,7 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
                                 <th className="px-4 py-3">Model</th>
                                 <th className="px-4 py-3 text-right">Input</th>
                                 <th className="px-4 py-3 text-right">Output</th>
+                                <th className="px-4 py-3 text-right">Cost</th>
                                 <th className="px-4 py-3 text-right">Total</th>
                             </tr>
                         </thead>
@@ -267,6 +276,9 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
                                     </td>
                                     <td className="px-4 py-3 text-right text-slate-600">{log.inputTokens}</td>
                                     <td className="px-4 py-3 text-right text-slate-600">{log.outputTokens}</td>
+                                    <td className="px-4 py-3 text-right text-green-600 font-medium">
+                                        ${log.cost?.toFixed(4)}
+                                    </td>
                                     <td className="px-4 py-3 text-right font-medium text-slate-800">
                                         {log.inputTokens + log.outputTokens}
                                     </td>
