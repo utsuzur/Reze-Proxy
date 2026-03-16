@@ -224,26 +224,28 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
                     <BarChart2 className="w-5 h-5 text-reze-500" />
                     Recent Activity (Token Usage & Cost)
                 </h3>
-                <div className="h-64 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={graphData}>
-                      <XAxis dataKey="time" fontSize={12} tickLine={false} axisLine={false} />
-                      <YAxis yAxisId="left" fontSize={12} tickLine={false} axisLine={false} />
-                      <YAxis yAxisId="right" orientation="right" fontSize={12} tickLine={false} axisLine={false} />
-                      <Tooltip 
-                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                        cursor={{ fill: '#f1f5f9' }}
-                        formatter={(value: any, name: string) => [
-                          name === 'Cost' ? `$${parseFloat(value).toFixed(4)}` : value,
-                          name
-                        ]}
-                      />
-                      <Legend />
-                      <Bar yAxisId="left" dataKey="Input" fill="#94a3b8" radius={[4, 4, 0, 0]} stackId="a" />
-                      <Bar yAxisId="left" dataKey="Output" fill="#8b5cf6" radius={[4, 4, 0, 0]} stackId="a" />
-                      <Bar yAxisId="right" dataKey="Cost" fill="#10b981" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
+                <div className="w-full overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
+                  <div className="h-64 min-w-[800px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={graphData}>
+                        <XAxis dataKey="time" fontSize={12} tickLine={false} axisLine={false} />
+                        <YAxis yAxisId="left" fontSize={12} tickLine={false} axisLine={false} />
+                        <YAxis yAxisId="right" orientation="right" fontSize={12} tickLine={false} axisLine={false} />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                          cursor={{ fill: '#f1f5f9' }}
+                          formatter={(value: any, name: string) => [
+                            name === 'Cost' ? `$${parseFloat(value).toFixed(4)}` : value,
+                            name
+                          ]}
+                        />
+                        <Legend />
+                        <Bar yAxisId="left" dataKey="Input" fill="#94a3b8" radius={[4, 4, 0, 0]} stackId="a" />
+                        <Bar yAxisId="left" dataKey="Output" fill="#8b5cf6" radius={[4, 4, 0, 0]} stackId="a" />
+                        <Bar yAxisId="right" dataKey="Cost" fill="#10b981" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
               </div>
 

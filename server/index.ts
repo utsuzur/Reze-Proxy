@@ -981,7 +981,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       // Check Input Token Limit
       const messages = body.messages || [];
       const inputContent = messages.map((m: any) => m.content || '').join('\n');
-      const currentInputTokens = countMessagesTokens(messages, modelId);
+      const currentInputTokens = countMessagesTokens(messages, modelId, modelRow.providerType);
 
       if (row.maxTokenUsage && row.maxTokenUsage > 0) {
         if ((row.inputTokens + row.outputTokens + currentInputTokens) > row.maxTokenUsage) {
@@ -1237,7 +1237,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                         res.end();
                         
                         const inputTokens = streamUsage.prompt_tokens || currentInputTokens;
-                        const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId);
+                        const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId, modelRow.providerType);
                         const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
                         db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ?, totalCost = totalCost + ? WHERE id = ?', [inputTokens, outputTokens, cost, row.id]);
@@ -1264,7 +1264,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             
             const inputTokens = data.usage?.prompt_tokens || currentInputTokens;
             const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
-            const outputTokens = data.usage?.completion_tokens || countTokens(outputContent, modelId);
+            const outputTokens = data.usage?.completion_tokens || countTokens(outputContent, modelId, modelRow.providerType);
             const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
             db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ?, totalCost = totalCost + ? WHERE id = ?', [inputTokens, outputTokens, cost, row.id]);
