@@ -1388,26 +1388,30 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                         if (inputFormat === 'openai' && !isAnthropic) res.write('data: [DONE]\n\n');
                         res.end();
                         
-                        const inputTokens = streamUsage.prompt_tokens || currentInputTokens;
-                        const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId, modelRow.providerType);
-                        const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
+                        try {
+                            const inputTokens = streamUsage.prompt_tokens || currentInputTokens;
+                            const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId, modelRow.providerType);
+                            const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
-                        await db.update(tokens).set({
-                            usageCount: (row.usageCount || 0) + 1,
-                            inputTokens: (row.inputTokens || 0) + inputTokens,
-                            outputTokens: (row.outputTokens || 0) + outputTokens,
-                            totalCost: (row.totalCost || 0) + cost,
-                            updatedAt: new Date().toISOString()
-                        }).where(eq(tokens.id, row.id));
+                            await db.update(tokens).set({
+                                usageCount: (row.usageCount || 0) + 1,
+                                inputTokens: (row.inputTokens || 0) + inputTokens,
+                                outputTokens: (row.outputTokens || 0) + outputTokens,
+                                totalCost: (row.totalCost || 0) + cost,
+                                updatedAt: new Date().toISOString()
+                            }).where(eq(tokens.id, row.id));
 
-                        await db.insert(requestLogs).values({
-                            tokenId: row.id,
-                            modelId,
-                            inputTokens,
-                            outputTokens,
-                            cost,
-                            timestamp: new Date().toISOString()
-                        });
+                            await db.insert(requestLogs).values({
+                                tokenId: row.id,
+                                modelId,
+                                inputTokens,
+                                outputTokens,
+                                cost,
+                                timestamp: new Date().toISOString()
+                            });
+                        } catch (dbErr) {
+                            console.error("Error updating usage after stream:", dbErr);
+                        }
                     }
                 } else {
                     res.end();
@@ -1453,21 +1457,31 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             return res.json(data);
 
           } catch (e: any) {
-            await db.insert(errorLogs).values({
-                tokenId: row.id,
-                modelId,
-                providerId: modelRow.providerId,
-                errorType: 'server_error',
-                errorMessage: `Key Index ${keyIndex} - ${e.message || String(e)}`,
-                timestamp: new Date().toISOString()
-            });
+            try {
+                await db.insert(errorLogs).values({
+                    tokenId: row.id,
+                    modelId,
+                    providerId: modelRow.providerId,
+                    errorType: 'server_error',
+                    errorMessage: `Key Index ${keyIndex} - ${e.message || String(e)}`,
+                    timestamp: new Date().toISOString()
+                });
+            } catch (dbErr) {
+                console.error("Failed to log error to DB:", dbErr);
+            }
+            
             if (currentAttempt < apiKeys.length) continue;
-            return res.json({ error: { message: "All attempts failed" } });
+            if (!res.headersSent) {
+                return res.json({ error: { message: "All attempts failed" } });
+            }
+            return;
           }
       }
   } catch (err: any) {
       console.error("handleChatRequest error:", err);
-      res.status(500).json({ error: { message: "Internal server error" } });
+      if (!res.headersSent) {
+          res.status(500).json({ error: { message: "Internal server error" } });
+      }
   }
 }
 
