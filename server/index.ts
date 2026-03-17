@@ -911,6 +911,11 @@ app.get('/api/status', (req, res) => {
     name: 'Reze Proxy',
     version: '1.0.0',
     message: "Let's run away together.",
+    database: {
+        type: DB_TYPE,
+        externalConnected: DB_TYPE === 'postgres',
+        syncEnabled: process.env.DB_SYNC_ON_STARTUP === 'true'
+    },
     endpoints: {
       admin: '/shrine',
       api: '/api'
