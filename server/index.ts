@@ -5,6 +5,25 @@ import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import db, { dbReady } from './db.ts';
+import * as schema from './schema.ts';
+import { eq, and, sql, desc, lt } from 'drizzle-orm';
+
+const DB_TYPE = process.env.DB_TYPE || 'sqlite';
+
+// Helper to get the correct table based on DB_TYPE
+const getTable = (tableName: string) => {
+  const prefix = DB_TYPE === 'postgres' ? 'pg' : 'sqlite';
+  const key = `${prefix}${tableName.charAt(0).toUpperCase()}${tableName.slice(1)}` as keyof typeof schema;
+  return schema[key] as any;
+};
+
+const providers = getTable('providers');
+const models = getTable('models');
+const tokens = getTable('tokens');
+const requestLogs = getTable('requestLogs');
+const adminSessions = getTable('adminSessions');
+const adminAuditLog = getTable('adminAuditLog');
+const errorLogs = getTable('errorLogs');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -63,30 +82,12 @@ const parseCookies = (cookieHeader?: string): Record<string, string> => {
  return out;
 };
 
-// Helper to promisify db.get / db.run (shared across admin + proxy)
-const dbGet = (sql: string, params: any[]) =>
- new Promise<any>((resolve, reject) => {
-   db.get(sql, params, (err, row) => {
-     if (err) reject(err);
-     else resolve(row);
-   });
- });
-
-const dbRun = (sql: string, params: any[]) =>
- new Promise<void>((resolve, reject) => {
-   db.run(sql, params, (err) => {
-     if (err) reject(err);
-     else resolve();
-   });
- });
-
-const dbRunChanges = (sql: string, params: any[]) =>
- new Promise<number>((resolve, reject) => {
-   db.run(sql, params, function (err) {
-     if (err) reject(err);
-     else resolve(this.changes);
-   });
- });
+// Helper to promisify db.get / db.run (Legacy - replacing with Drizzle)
+const dbGet = async (sqlStr: string, params: any[]) => {
+    // This is a temporary bridge for complex raw queries if needed
+    // For now, we'll try to use Drizzle directly
+    return null;
+};
 
 const setAdminCookie = (res: express.Response, value: string, maxAgeMs: number) => {
  res.cookie(ADMIN_COOKIE_NAME, value, {
@@ -166,10 +167,14 @@ const auditAdminEvent = async (
    const ip = req.ip;
    const userAgent = req.get('user-agent') || null;
    const detailsJson = details ? JSON.stringify(details) : null;
-   await dbRun(
-     'INSERT INTO admin_audit_log (timestamp, event, ip, userAgent, details) VALUES (?, ?, ?, ?, ?)',
-     [timestamp, event, ip, userAgent, detailsJson]
-   );
+   
+   await db.insert(adminAuditLog).values({
+     timestamp,
+     event,
+     ip,
+     userAgent,
+     details: detailsJson
+   });
  } catch (e) {
    // Don't block auth flows on audit logging failures
    console.error('admin_audit_log insert failed', e);
@@ -196,9 +201,8 @@ const getAdminSessionFromRequest = async (req: express.Request): Promise<AdminSe
  const [selector, validator] = raw.split('.');
  if (!selector || !validator) return null;
 
- const row = (await dbGet('SELECT * FROM admin_sessions WHERE selector = ?', [
-   selector
- ])) as AdminSessionRow | undefined;
+ const results = await db.select().from(adminSessions).where(eq(adminSessions.selector, selector)).limit(1);
+ const row = results[0] as AdminSessionRow | undefined;
 
  if (!row) return null;
  if (row.revokedAt) return null;
@@ -231,7 +235,10 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
    }
 
    // Fire-and-forget lastSeenAt update
-   db.run('UPDATE admin_sessions SET lastSeenAt = ? WHERE id = ?', [new Date().toISOString(), session.id]);
+   db.update(adminSessions)
+     .set({ lastSeenAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+     .where(eq(adminSessions.id, session.id))
+     .then(() => {});
 
    (req as any).adminSession = session;
    next();
@@ -282,15 +289,22 @@ app.post('/api/admin/login', async (req, res) => {
    const validatorHash = sha256Hex(validator);
 
    try {
-     await dbRun(
-       'INSERT INTO admin_sessions (selector, validatorHash, createdAt, lastSeenAt, expiresAt, revokedAt, ip, userAgent) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)',
-       [selector, validatorHash, nowIso, nowIso, expiresAtIso, req.ip, req.get('user-agent') || null]
-     );
+     await db.insert(adminSessions).values({
+       selector,
+       validatorHash,
+       createdAt: nowIso,
+       lastSeenAt: nowIso,
+       expiresAt: expiresAtIso,
+       revokedAt: null,
+       ip: req.ip,
+       userAgent: req.get('user-agent') || null,
+       updatedAt: nowIso
+     });
      created = true;
      break;
    } catch (e: any) {
-     // SQLite constraint errors include "SQLITE_CONSTRAINT"
-     if (String(e?.message || '').includes('SQLITE_CONSTRAINT')) continue;
+     // Drizzle/DB unique constraint error check
+     if (e.message?.includes('UNIQUE') || e.code === '23505') continue; 
      throw e;
    }
  }
@@ -419,7 +433,10 @@ app.post('/api/admin/logout', requireAdmin, async (req, res) => {
    const session = (req as any).adminSession as AdminSessionRow;
    const nowIso = new Date().toISOString();
 
-   await dbRun('UPDATE admin_sessions SET revokedAt = ? WHERE id = ?', [nowIso, session.id]);
+   await db.update(adminSessions)
+     .set({ revokedAt: nowIso, updatedAt: nowIso })
+     .where(eq(adminSessions.id, session.id));
+     
    await auditAdminEvent(req, 'logout');
 
    clearAdminCookie(res);
@@ -434,15 +451,17 @@ app.post('/api/admin/logout', requireAdmin, async (req, res) => {
 app.post('/api/admin/logout-all', requireAdmin, async (req, res) => {
  try {
    const nowIso = new Date().toISOString();
-   const revoked = await dbRunChanges('UPDATE admin_sessions SET revokedAt = ? WHERE revokedAt IS NULL', [
-     nowIso
-   ]);
+   // Use sql to handle updates where a condition is met across all records
+   const result = await db.update(adminSessions)
+     .set({ revokedAt: nowIso, updatedAt: nowIso })
+     .where(sql`${adminSessions.revokedAt} IS NULL`);
 
-   await auditAdminEvent(req, 'logout_all', { revoked });
+   // result might not contain 'changes' depending on the driver, but audit is enough
+   await auditAdminEvent(req, 'logout_all');
 
    clearAdminCookie(res);
    clearCsrfCookie(res);
-   res.json({ ok: true, revoked });
+   res.json({ ok: true });
  } catch (e) {
    console.error('/api/admin/logout-all error', e);
    res.status(500).json({ error: 'Internal server error' });
@@ -453,37 +472,52 @@ app.post('/api/admin/logout-all', requireAdmin, async (req, res) => {
  * Public read endpoints for the landing page (no admin cookie required).
  * These intentionally avoid returning provider base URLs / keys.
  */
-app.get('/api/public/providers', (req, res) => {
-  db.all(
-    `SELECT DISTINCT p.id, p.name, p.type
-     FROM providers p
-     JOIN models m ON m.providerId = p.id
-     WHERE m.isActive = 1
-     ORDER BY p.name ASC`,
-    [],
-    (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
-    }
-  );
+app.get('/api/public/providers', async (req, res) => {
+  try {
+    const rows = await db.select({
+      id: providers.id,
+      name: providers.name,
+      type: providers.type
+    })
+    .from(providers)
+    .innerJoin(models, eq(models.providerId, providers.id))
+    .where(eq(models.isActive, 1))
+    .groupBy(providers.id)
+    .orderBy(providers.name);
+    
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.get('/api/public/models', (req, res) => {
-  db.all(
-    `SELECT m.*, p.name as providerName 
-     FROM models m 
-     JOIN providers p ON m.providerId = p.id 
-     WHERE m.isActive = 1`, 
-    [], 
-    (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const formatted = (rows as any[]).map((r) => ({
+app.get('/api/public/models', async (req, res) => {
+  try {
+    const rows = await db.select({
+      id: models.id,
+      providerId: models.providerId,
+      name: models.name,
+      maxInputTokens: models.maxInputTokens,
+      maxOutputTokens: models.maxOutputTokens,
+      pricingModelId: models.pricingModelId,
+      inputPricePer1k: models.inputPricePer1k,
+      outputPricePer1k: models.outputPricePer1k,
+      isActive: models.isActive,
+      providerName: providers.name
+    })
+    .from(models)
+    .innerJoin(providers, eq(models.providerId, providers.id))
+    .where(eq(models.isActive, 1));
+
+    const formatted = rows.map((r) => ({
       ...r,
       id: `${r.providerName}/${r.name}`,
       isActive: true
     }));
     res.json(formatted);
-  });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/admin/search-prices', requireAdmin, async (req, res) => {
@@ -550,10 +584,10 @@ app.post('/api/admin/fetch-models', requireAdmin, async (req, res) => {
 });
 
 // --- Providers (Admin) ---
-app.get('/api/providers', requireAdmin, (req, res) => {
-  db.all('SELECT * FROM providers', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const formatted = (rows as any[]).map(r => {
+app.get('/api/providers', requireAdmin, async (req, res) => {
+  try {
+    const rows = await db.select().from(providers);
+    const formatted = rows.map(r => {
         let displayKey = r.apiKey;
         if (r.apiKey) {
             try {
@@ -573,95 +607,147 @@ app.get('/api/providers', requireAdmin, (req, res) => {
         };
     });
     res.json(formatted);
-  });
-});
-
-app.post('/api/providers', requireAdmin, (req, res) => {
-  const { id, name, baseUrl, apiKey, type, removeTopP } = req.body;
-  db.run('INSERT INTO providers (id, name, baseUrl, apiKey, type, removeTopP) VALUES (?, ?, ?, ?, ?, ?)', 
-    [id, name, baseUrl, apiKey, type, removeTopP ? 1 : 0], 
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id, name, baseUrl, apiKey, type, removeTopP });
-    }
-  );
-});
-
-app.put('/api/providers', requireAdmin, (req, res) => {
-  const { id, name, baseUrl, apiKey, removeTopP } = req.body;
-  
-  if (apiKey && !apiKey.includes('...')) {
-    db.run('UPDATE providers SET name = ?, baseUrl = ?, apiKey = ?, removeTopP = ? WHERE id = ?',
-      [name, baseUrl, apiKey, removeTopP ? 1 : 0, id],
-      function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ updated: this.changes });
-      }
-    );
-  } else {
-    db.run('UPDATE providers SET name = ?, baseUrl = ?, removeTopP = ? WHERE id = ?',
-      [name, baseUrl, removeTopP ? 1 : 0, id],
-      function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ updated: this.changes });
-      }
-    );
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.delete('/api/providers/:id', requireAdmin, (req, res) => {
+app.post('/api/providers', requireAdmin, async (req, res) => {
+  const { id, name, baseUrl, apiKey, type, removeTopP } = req.body;
+  try {
+    const nowIso = new Date().toISOString();
+    await db.insert(providers).values({
+      id,
+      name,
+      baseUrl,
+      apiKey,
+      type,
+      removeTopP: removeTopP ? 1 : 0,
+      createdAt: nowIso,
+      updatedAt: nowIso
+    });
+    res.json({ id, name, baseUrl, apiKey, type, removeTopP });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/providers', requireAdmin, async (req, res) => {
+  const { id, name, baseUrl, apiKey, removeTopP } = req.body;
+  const nowIso = new Date().toISOString();
+  
+  try {
+    if (apiKey && !apiKey.includes('...')) {
+      await db.update(providers)
+        .set({ name, baseUrl, apiKey, removeTopP: removeTopP ? 1 : 0, updatedAt: nowIso })
+        .where(eq(providers.id, id));
+    } else {
+      await db.update(providers)
+        .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, updatedAt: nowIso })
+        .where(eq(providers.id, id));
+    }
+    res.json({ updated: 1 });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/providers/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
-  db.run('DELETE FROM providers WHERE id = ?', [id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
+  try {
+    await db.delete(providers).where(eq(providers.id, id));
+    res.json({ deleted: 1 });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Models ---
-app.get('/api/models', requireAdmin, (req, res) => {
-  db.all('SELECT * FROM models', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const formatted = (rows as any[]).map((r) => ({
+app.get('/api/models', requireAdmin, async (req, res) => {
+  try {
+    const rows = await db.select().from(models);
+    const formatted = rows.map((r) => ({
         ...r, 
         isActive: !!r.isActive
     }));
     res.json(formatted);
-  });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.post('/api/models', requireAdmin, (req, res) => {
-  const models = Array.isArray(req.body) ? req.body : [req.body];
+app.post('/api/models', requireAdmin, async (req, res) => {
+  const modelData = Array.isArray(req.body) ? req.body : [req.body];
+  const nowIso = new Date().toISOString();
   
-  const stmt = db.prepare('INSERT OR REPLACE INTO models (id, providerId, name, maxInputTokens, maxOutputTokens, pricingModelId, inputPricePer1k, outputPricePer1k, isActive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  
-  db.serialize(() => {
-    models.forEach((m: any) => {
-        stmt.run(m.id, m.providerId, m.name, m.maxInputTokens, m.maxOutputTokens, m.pricingModelId, m.inputPricePer1k || 0, m.outputPricePer1k || 0, m.isActive ? 1 : 0);
-    });
-    stmt.finalize((err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true, count: models.length });
-    });
-  });
+  try {
+    // Upsert logic for Drizzle (onConflictDoUpdate)
+    // Note: SQLite and PG have slightly different conflict syntax in Drizzle if not using the common helper,
+    // but here we can just use a loop if it's easier or use the specific driver features.
+    // To be safe across both, we can do it in a loop for now or use the insert...onConflict syntax.
+    
+    for (const m of modelData) {
+        await db.insert(models).values({
+            id: m.id,
+            providerId: m.providerId,
+            name: m.name,
+            maxInputTokens: m.maxInputTokens,
+            maxOutputTokens: m.maxOutputTokens,
+            pricingModelId: m.pricingModelId,
+            inputPricePer1k: m.inputPricePer1k || 0,
+            outputPricePer1k: m.outputPricePer1k || 0,
+            isActive: m.isActive ? 1 : 0,
+            createdAt: nowIso,
+            updatedAt: nowIso
+        }).onConflictDoUpdate({
+            target: [models.id, models.providerId],
+            set: {
+                name: m.name,
+                maxInputTokens: m.maxInputTokens,
+                maxOutputTokens: m.maxOutputTokens,
+                pricingModelId: m.pricingModelId,
+                inputPricePer1k: m.inputPricePer1k || 0,
+                outputPricePer1k: m.outputPricePer1k || 0,
+                isActive: m.isActive ? 1 : 0,
+                updatedAt: nowIso
+            }
+        });
+    }
+    res.json({ success: true, count: modelData.length });
+  } catch (err: any) {
+    console.error("Models upsert error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.put('/api/models', requireAdmin, (req, res) => {
+app.put('/api/models', requireAdmin, async (req, res) => {
     const m = req.body;
-    db.run('UPDATE models SET name = ?, maxInputTokens = ?, maxOutputTokens = ?, pricingModelId = ?, inputPricePer1k = ?, outputPricePer1k = ?, isActive = ? WHERE id = ? AND providerId = ?',
-        [m.name, m.maxInputTokens, m.maxOutputTokens, m.pricingModelId, m.inputPricePer1k || 0, m.outputPricePer1k || 0, m.isActive ? 1 : 0, m.id, m.providerId],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ updated: this.changes });
-        }
-    );
+    const nowIso = new Date().toISOString();
+    try {
+        await db.update(models)
+            .set({
+                name: m.name,
+                maxInputTokens: m.maxInputTokens,
+                maxOutputTokens: m.maxOutputTokens,
+                pricingModelId: m.pricingModelId,
+                inputPricePer1k: m.inputPricePer1k || 0,
+                outputPricePer1k: m.outputPricePer1k || 0,
+                isActive: m.isActive ? 1 : 0,
+                updatedAt: nowIso
+            })
+            .where(and(eq(models.id, m.id), eq(models.providerId, m.providerId)));
+        res.json({ updated: 1 });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 
 // --- Tokens ---
-app.get('/api/tokens', requireAdmin, (req, res) => {
-  db.all('SELECT * FROM tokens', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const formatted = (rows as any[]).map((r) => {
+app.get('/api/tokens', requireAdmin, async (req, res) => {
+  try {
+    const rows = await db.select().from(tokens);
+    const formatted = rows.map((r) => {
         let accessibleModelIds = [];
         try {
             accessibleModelIds = JSON.parse(r.accessibleModelIds || '[]');
@@ -675,123 +761,147 @@ app.get('/api/tokens', requireAdmin, (req, res) => {
         };
     });
     res.json(formatted);
-  });
-});
-
-app.post('/api/tokens', requireAdmin, (req, res) => {
-  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage } = req.body;
-  db.run('INSERT INTO tokens (id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, name, token, createdAt, expiresAt, JSON.stringify(accessibleModelIds), usageCount, isActive !== undefined ? (isActive ? 1 : 0) : 1, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage],
-    function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(req.body);
-    }
-  );
-});
-
-app.put('/api/tokens', requireAdmin, (req, res) => {
-  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage } = req.body;
-  
-  if (token) {
-    db.run('UPDATE tokens SET name = ?, token = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ?, maxRequestsPerDay = ?, maxRequestsPerMinute = ?, maxTokenUsage = ?, maxCostUsage = ? WHERE id = ?',
-      [name, token, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, id],
-      function(err) {
-          if (err) return res.status(500).json({ error: err.message });
-          res.json({ updated: this.changes });
-      }
-    );
-  } else {
-    db.run('UPDATE tokens SET name = ?, expiresAt = ?, accessibleModelIds = ?, isActive = ?, maxRequestsPerDay = ?, maxRequestsPerMinute = ?, maxTokenUsage = ?, maxCostUsage = ? WHERE id = ?',
-      [name, expiresAt, JSON.stringify(accessibleModelIds), isActive ? 1 : 0, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, id],
-      function(err) {
-          if (err) return res.status(500).json({ error: err.message });
-          res.json({ updated: this.changes });
-      }
-    );
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.delete('/api/tokens/:id', requireAdmin, (req, res) => {
+app.post('/api/tokens', requireAdmin, async (req, res) => {
+  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage } = req.body;
+  const nowIso = new Date().toISOString();
+  try {
+    await db.insert(tokens).values({
+      id,
+      name,
+      token,
+      createdAt: createdAt || nowIso,
+      expiresAt: expiresAt,
+      accessibleModelIds: JSON.stringify(accessibleModelIds),
+      usageCount: usageCount || 0,
+      isActive: isActive !== undefined ? (isActive ? 1 : 0) : 1,
+      maxRequestsPerDay,
+      maxRequestsPerMinute,
+      maxTokenUsage,
+      maxCostUsage,
+      updatedAt: nowIso
+    });
+    res.json(req.body);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/tokens', requireAdmin, async (req, res) => {
+  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage } = req.body;
+  const nowIso = new Date().toISOString();
+  
+  try {
+    const updateData: any = {
+      name,
+      expiresAt,
+      accessibleModelIds: JSON.stringify(accessibleModelIds),
+      isActive: isActive ? 1 : 0,
+      maxRequestsPerDay,
+      maxRequestsPerMinute,
+      maxTokenUsage,
+      maxCostUsage,
+      updatedAt: nowIso
+    };
+    if (token) updateData.token = token;
+
+    await db.update(tokens).set(updateData).where(eq(tokens.id, id));
+    res.json({ updated: 1 });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/tokens/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
-  db.run('DELETE FROM tokens WHERE id = ?', [id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
+  try {
+    await db.delete(tokens).where(eq(tokens.id, id));
+    res.json({ deleted: 1 });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Admin Maintenance ---
-app.delete('/api/logs/prune', requireAdmin, (req, res) => {
+app.delete('/api/logs/prune', requireAdmin, async (req, res) => {
     // Delete logs older than 30 days
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const timestamp = thirtyDaysAgo.toISOString();
+    const timestamp = thirtyDaysAgo;
 
-    db.run('DELETE FROM request_logs WHERE timestamp < ?', [timestamp], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ deleted: this.changes, message: `Pruned logs older than ${timestamp}` });
-    });
+    try {
+        await db.delete(requestLogs).where(lt(requestLogs.timestamp, timestamp));
+        res.json({ success: true, message: `Pruned logs older than ${timestamp.toISOString()}` });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.get('/api/errors', requireAdmin, (req, res) => {
-    db.all('SELECT * FROM error_logs ORDER BY timestamp DESC LIMIT 100', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/errors', requireAdmin, async (req, res) => {
+    try {
+        const rows = await db.select().from(errorLogs).orderBy(desc(errorLogs.timestamp)).limit(100);
         res.json(rows);
-    });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.delete('/api/errors/prune', requireAdmin, (req, res) => {
-    // Delete ALL error logs
-    db.run('DELETE FROM error_logs', [], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ deleted: this.changes, message: `Cleared all error logs` });
-    });
+app.delete('/api/errors/prune', requireAdmin, async (req, res) => {
+    try {
+        await db.delete(errorLogs);
+        res.json({ success: true, message: `Cleared all error logs` });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.post('/api/my-token/details', (req, res) => {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: "Token is required" });
+app.post('/api/my-token/details', async (req, res) => {
+    const { token: tokenStr } = req.body;
+    if (!tokenStr) return res.status(400).json({ error: "Token is required" });
 
-    db.get('SELECT * FROM tokens WHERE token = ?', [token], (err, row: any) => {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const tokenRows = await db.select().from(tokens).where(eq(tokens.token, tokenStr)).limit(1);
+        const row = tokenRows[0];
         if (!row) return res.status(404).json({ error: "Invalid token" });
 
-        // Get recent logs
-        db.all('SELECT * FROM request_logs WHERE tokenId = ? ORDER BY timestamp DESC LIMIT 50', [row.id], (err, logs) => {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            // Calculate remaining RPD
-            const now = new Date();
-            const todayStr = now.toISOString().split('T')[0];
-            const remainingRequestsToday = (row.maxRequestsPerDay && row.maxRequestsPerDay > 0) 
-                ? Math.max(0, row.maxRequestsPerDay - (row.lastRequestDate === todayStr ? row.requestsToday : 0))
-                : null; // Null means unlimited
-
-             // Get stats for graph (last 7 days maybe? or just return logs and let frontend handle it)
-             // For now, returning raw logs is fine as requested "logging info (last 50 requests)"
-            
-            res.json({
-                ...row,
-                isActive: !!row.isActive,
-                remainingRequestsToday,
-                logs
-            });
+        const logs = await db.select().from(requestLogs).where(eq(requestLogs.tokenId, row.id)).orderBy(desc(requestLogs.timestamp)).limit(50);
+        
+        // Calculate remaining RPD
+        const now = new Date();
+        const todayStr = now.toISOString().split('T')[0];
+        const remainingRequestsToday = (row.maxRequestsPerDay && row.maxRequestsPerDay > 0) 
+            ? Math.max(0, row.maxRequestsPerDay - (row.lastRequestDate === todayStr ? (row.requestsToday || 0) : 0))
+            : null; 
+        
+        res.json({
+            ...row,
+            isActive: !!row.isActive,
+            remainingRequestsToday,
+            logs
         });
-    });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.put('/api/my-token/name', (req, res) => {
-    const { token, name } = req.body;
-    if (!token || !name) return res.status(400).json({ error: "Token and name are required" });
+app.put('/api/my-token/name', async (req, res) => {
+    const { token: tokenStr, name } = req.body;
+    if (!tokenStr || !name) return res.status(400).json({ error: "Token and name are required" });
 
-    db.get('SELECT id FROM tokens WHERE token = ?', [token], (err, row: any) => {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const tokenRows = await db.select({ id: tokens.id }).from(tokens).where(eq(tokens.token, tokenStr)).limit(1);
+        const row = tokenRows[0];
         if (!row) return res.status(404).json({ error: "Invalid token" });
 
-        db.run('UPDATE tokens SET name = ? WHERE id = ?', [name, row.id], function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true, name });
-        });
-    });
+        await db.update(tokens).set({ name, updatedAt: new Date().toISOString() }).where(eq(tokens.id, row.id));
+        res.json({ success: true, name });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- Shrine Status ---
@@ -812,25 +922,26 @@ import { countTokens, countMessagesTokens } from './tokenService.ts';
 
 // --- OpenAI Compatible Proxy ---
 
-app.get('/v1/models', (req, res) => {
-  db.all(
-    `SELECT m.name, p.name as providerName 
-     FROM models m 
-     JOIN providers p ON m.providerId = p.id 
-     WHERE m.isActive = 1`, 
-    [], 
-    (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    // Use a Set to ensure uniqueness of the generated IDs if needed, 
-    // though (providerName, modelName) should be unique if logic holds.
-    const models = (rows as any[]).map(r => ({
+app.get('/v1/models', async (req, res) => {
+  try {
+    const rows = await db.select({
+      name: models.name,
+      providerName: providers.name
+    })
+    .from(models)
+    .innerJoin(providers, eq(models.providerId, providers.id))
+    .where(eq(models.isActive, 1));
+
+    const formatted = rows.map(r => ({
         id: `${r.providerName}/${r.name}`, // Expose provider/model
         object: "model",
         created: Math.floor(Date.now() / 1000),
         owned_by: "reze-proxy"
     }));
-    res.json({ object: "list", data: models });
-  });
+    res.json({ object: "list", data: formatted });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 import NodeCache from 'node-cache';
@@ -848,17 +959,18 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     return res.status(401).json({ error: { message: "Missing or invalid Authorization header", type: "invalid_request_error" } });
   }
   
-  let token = "";
+  let tokenStr = "";
   if (typeof authHeader === 'string') {
-      token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
+      tokenStr = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
   }
 
   try {
       // 1. Get Token (Cache -> DB)
-      let row: any = tokenCache.get(token);
+      let row: any = tokenCache.get(tokenStr);
       if (!row) {
-          row = await dbGet('SELECT * FROM tokens WHERE token = ?', [token]);
-          if (row) tokenCache.set(token, row);
+          const results = await db.select().from(tokens).where(eq(tokens.token, tokenStr)).limit(1);
+          row = results[0];
+          if (row) tokenCache.set(tokenStr, row);
       }
       
       if (!row) return res.status(401).json({ error: { message: "Invalid API key" } });
@@ -880,28 +992,28 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
     // Token Usage Limit
     if (row.maxTokenUsage && row.maxTokenUsage > 0) {
-        if ((row.inputTokens + row.outputTokens) >= row.maxTokenUsage) {
+        if (((row.inputTokens || 0) + (row.outputTokens || 0)) >= row.maxTokenUsage) {
             return res.status(403).json({ error: { message: "Overall token usage limit reached." } });
         }
     }
 
     // Budget Limit
     if (row.maxCostUsage && row.maxCostUsage > 0) {
-        if (row.totalCost >= row.maxCostUsage) {
+        if ((row.totalCost || 0) >= row.maxCostUsage) {
             return res.status(403).json({ error: { message: "Budget limit reached. Please contact admin to increase balance." } });
         }
     }
 
     // Daily Limit
     if (row.maxRequestsPerDay && row.maxRequestsPerDay > 0) {
-        if (row.lastRequestDate === todayStr && row.requestsToday >= row.maxRequestsPerDay) {
+        if (row.lastRequestDate === todayStr && (row.requestsToday || 0) >= row.maxRequestsPerDay) {
              return res.status(429).json({ error: { message: "Daily request limit reached. Resets at 00:00 UTC." } });
         }
     }
 
     // Minute Limit
     if (row.maxRequestsPerMinute && row.maxRequestsPerMinute > 0) {
-         if (row.lastRequestMinute === currentMinuteStr && row.requestsThisMinute >= row.maxRequestsPerMinute) {
+         if (row.lastRequestMinute === currentMinuteStr && (row.requestsThisMinute || 0) >= row.maxRequestsPerMinute) {
              return res.status(429).json({ error: { message: "Rate limit exceeded. Please wait a minute." } });
          }
     }
@@ -913,15 +1025,15 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     if (row.lastRequestMinute !== currentMinuteStr) { row.requestsThisMinute = 1; row.lastRequestMinute = currentMinuteStr; }
     else { row.requestsThisMinute = (row.requestsThisMinute || 0) + 1; }
     
-    tokenCache.set(token, row); // Update cache with new counters
+    tokenCache.set(tokenStr, row); // Update cache with new counters
 
-    db.run(`UPDATE tokens SET 
-        requestsToday = CASE WHEN lastRequestDate = ? THEN requestsToday + 1 ELSE 1 END,
-        lastRequestDate = ?,
-        requestsThisMinute = CASE WHEN lastRequestMinute = ? THEN requestsThisMinute + 1 ELSE 1 END,
-        lastRequestMinute = ?
-        WHERE id = ?`, 
-        [todayStr, todayStr, currentMinuteStr, currentMinuteStr, row.id]);
+    await db.update(tokens).set({
+        requestsToday: row.requestsToday,
+        lastRequestDate: todayStr,
+        requestsThisMinute: row.requestsThisMinute,
+        lastRequestMinute: currentMinuteStr,
+        updatedAt: now.toISOString()
+    }).where(eq(tokens.id, row.id));
 
     let body = req.body;
     if (inputFormat === 'anthropic') {
@@ -940,24 +1052,54 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             const providerName = parts[0];
             const modelName = parts.slice(1).join('/');
             
-            modelRow = await dbGet(
-                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.type as providerType, p.removeTopP, p.lastUsedKeyIndex 
-                 FROM models m 
-                 JOIN providers p ON m.providerId = p.id 
-                 WHERE p.name = ? AND m.name = ? AND m.isActive = 1 LIMIT 1`, 
-                [providerName, modelName]
-            );
+            const results = await db.select({
+                id: models.id,
+                providerId: models.providerId,
+                name: models.name,
+                maxInputTokens: models.maxInputTokens,
+                maxOutputTokens: models.maxOutputTokens,
+                pricingModelId: models.pricingModelId,
+                inputPricePer1k: models.inputPricePer1k,
+                outputPricePer1k: models.outputPricePer1k,
+                isActive: models.isActive,
+                baseUrl: providers.baseUrl,
+                providerKey: providers.apiKey,
+                providerType: providers.type,
+                removeTopP: providers.removeTopP,
+                lastUsedKeyIndex: providers.lastUsedKeyIndex
+            })
+            .from(models)
+            .innerJoin(providers, eq(models.providerId, providers.id))
+            .where(and(eq(providers.name, providerName), eq(models.name, modelName), eq(models.isActive, 1)))
+            .limit(1);
+            
+            modelRow = results[0];
         }
 
         // Fallback: Try searching by model name directly (legacy/ambiguous mode)
         if (!modelRow) {
-            modelRow = await dbGet(
-                `SELECT m.*, p.baseUrl, p.apiKey as providerKey, p.type as providerType, p.removeTopP, p.lastUsedKeyIndex 
-                 FROM models m 
-                 JOIN providers p ON m.providerId = p.id 
-                 WHERE m.name = ? AND m.isActive = 1 LIMIT 1`, 
-                [modelId]
-            );
+            const results = await db.select({
+                id: models.id,
+                providerId: models.providerId,
+                name: models.name,
+                maxInputTokens: models.maxInputTokens,
+                maxOutputTokens: models.maxOutputTokens,
+                pricingModelId: models.pricingModelId,
+                inputPricePer1k: models.inputPricePer1k,
+                outputPricePer1k: models.outputPricePer1k,
+                isActive: models.isActive,
+                baseUrl: providers.baseUrl,
+                providerKey: providers.apiKey,
+                providerType: providers.type,
+                removeTopP: providers.removeTopP,
+                lastUsedKeyIndex: providers.lastUsedKeyIndex
+            })
+            .from(models)
+            .innerJoin(providers, eq(models.providerId, providers.id))
+            .where(and(eq(models.name, modelId), eq(models.isActive, 1)))
+            .limit(1);
+            
+            modelRow = results[0];
         }
 
         if (modelRow) modelCache.set(modelId, modelRow);
@@ -980,14 +1122,13 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
       // Check Input Token Limit
       const messages = body.messages || [];
-      const inputContent = messages.map((m: any) => m.content || '').join('\n');
       const currentInputTokens = countMessagesTokens(messages, modelId, modelRow.providerType);
 
       if (row.maxTokenUsage && row.maxTokenUsage > 0) {
-        if ((row.inputTokens + row.outputTokens + currentInputTokens) > row.maxTokenUsage) {
+        if (((row.inputTokens || 0) + (row.outputTokens || 0) + currentInputTokens) > row.maxTokenUsage) {
             return res.status(403).json({ 
                 error: { 
-                    message: `Request would exceed the token usage limit. Current: ${row.inputTokens + row.outputTokens}, This Request: ${currentInputTokens}, Max: ${row.maxTokenUsage}`
+                    message: `Request would exceed the token usage limit. Current: ${(row.inputTokens || 0) + (row.outputTokens || 0)}, This Request: ${currentInputTokens}, Max: ${row.maxTokenUsage}`
                 } 
             });
         }
@@ -1004,7 +1145,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       // --- Key Pool Rotation & Retries ---
       let apiKeys: string[] = [];
       try {
-          const parsed = JSON.parse(modelRow.providerKey);
+          const parsed = JSON.parse(modelRow.providerKey || '[]');
           apiKeys = Array.isArray(parsed) ? parsed : [modelRow.providerKey];
       } catch (e) {
           apiKeys = modelRow.providerKey ? [modelRow.providerKey] : [];
@@ -1085,8 +1226,14 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                const errorText = await proxyRes.text();
                console.error(`Provider Key ${keyIndex} Error (${proxyRes.status}):`, errorText);
 
-               db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
-                    [row.id, modelId, modelRow.providerId, 'provider_error', `Key Index ${keyIndex} - Status ${proxyRes.status}: ${errorText}`, new Date().toISOString()]);
+               await db.insert(errorLogs).values({
+                   tokenId: row.id,
+                   modelId,
+                   providerId: modelRow.providerId,
+                   errorType: 'provider_error',
+                   errorMessage: `Key Index ${keyIndex} - Status ${proxyRes.status}: ${errorText}`,
+                   timestamp: new Date().toISOString()
+               });
 
                if (currentAttempt < apiKeys.length) continue;
 
@@ -1100,7 +1247,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                });
             }
 
-            db.run('UPDATE providers SET lastUsedKeyIndex = ? WHERE id = ?', [keyIndex, modelRow.providerId]);
+            await db.update(providers).set({ lastUsedKeyIndex: keyIndex, updatedAt: new Date().toISOString() }).where(eq(providers.id, modelRow.providerId));
             success = true;
 
             if (isStreaming) {
@@ -1240,8 +1387,22 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                         const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId, modelRow.providerType);
                         const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
-                        db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ?, totalCost = totalCost + ? WHERE id = ?', [inputTokens, outputTokens, cost, row.id]);
-                        db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, cost, timestamp) VALUES (?, ?, ?, ?, ?, ?)', [row.id, modelId, inputTokens, outputTokens, cost, new Date().toISOString()]);
+                        await db.update(tokens).set({
+                            usageCount: (row.usageCount || 0) + 1,
+                            inputTokens: (row.inputTokens || 0) + inputTokens,
+                            outputTokens: (row.outputTokens || 0) + outputTokens,
+                            totalCost: (row.totalCost || 0) + cost,
+                            updatedAt: new Date().toISOString()
+                        }).where(eq(tokens.id, row.id));
+
+                        await db.insert(requestLogs).values({
+                            tokenId: row.id,
+                            modelId,
+                            inputTokens,
+                            outputTokens,
+                            cost,
+                            timestamp: new Date().toISOString()
+                        });
                     }
                 } else {
                     res.end();
@@ -1267,18 +1428,40 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             const outputTokens = data.usage?.completion_tokens || countTokens(outputContent, modelId, modelRow.providerType);
             const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
-            db.run('UPDATE tokens SET usageCount = usageCount + 1, inputTokens = inputTokens + ?, outputTokens = outputTokens + ?, totalCost = totalCost + ? WHERE id = ?', [inputTokens, outputTokens, cost, row.id]);
-            db.run('INSERT INTO request_logs (tokenId, modelId, inputTokens, outputTokens, cost, timestamp) VALUES (?, ?, ?, ?, ?, ?)', [row.id, modelId, inputTokens, outputTokens, cost, new Date().toISOString()]);
+            await db.update(tokens).set({
+                usageCount: (row.usageCount || 0) + 1,
+                inputTokens: (row.inputTokens || 0) + inputTokens,
+                outputTokens: (row.outputTokens || 0) + outputTokens,
+                totalCost: (row.totalCost || 0) + cost,
+                updatedAt: new Date().toISOString()
+            }).where(eq(tokens.id, row.id));
+
+            await db.insert(requestLogs).values({
+                tokenId: row.id,
+                modelId,
+                inputTokens,
+                outputTokens,
+                cost,
+                timestamp: new Date().toISOString()
+            });
 
             return res.json(data);
 
           } catch (e: any) {
-            db.run('INSERT INTO error_logs (tokenId, modelId, providerId, errorType, errorMessage, timestamp) VALUES (?, ?, ?, ?, ?, ?)', [row.id, modelId, modelRow.providerId, 'server_error', `Key Index ${keyIndex} - ${e.message || String(e)}`, new Date().toISOString()]);
+            await db.insert(errorLogs).values({
+                tokenId: row.id,
+                modelId,
+                providerId: modelRow.providerId,
+                errorType: 'server_error',
+                errorMessage: `Key Index ${keyIndex} - ${e.message || String(e)}`,
+                timestamp: new Date().toISOString()
+            });
             if (currentAttempt < apiKeys.length) continue;
             return res.json({ error: { message: "All attempts failed" } });
           }
       }
   } catch (err: any) {
+      console.error("handleChatRequest error:", err);
       res.status(500).json({ error: { message: "Internal server error" } });
   }
 }
@@ -1290,17 +1473,29 @@ app.post('/v1/messages', (req, res) => handleChatRequest(req, res, 'anthropic'))
 const distPath = path.join(__dirname, '../dist');
 app.use(express.static(distPath));
 
+import { syncDatabases } from './sync.ts';
+
 // Handle SPA routing - return index.html for any non-API routes
 app.get(/^(?!\/api|\/v1).*$/, (req, res, next) => {
   // Logic is redundant if regex handles it, but keeping 'next' safety or serving file
   res.sendFile(path.join(distPath, 'index.html'));
 });
 
-dbReady.then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-  });
-}).catch(err => {
-  console.error('Failed to initialize database:', err);
-  process.exit(1);
-});
+const startServer = async () => {
+    try {
+        // Run sync if configured
+        if (process.env.DB_SYNC_ON_STARTUP === 'true') {
+            console.log('Starting database synchronization...');
+            await syncDatabases();
+        }
+
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`Server running on http://0.0.0.0:${PORT}`);
+        });
+    } catch (err) {
+        console.error('Failed to start server:', err);
+        process.exit(1);
+    }
+};
+
+startServer();

@@ -7,12 +7,12 @@ function getTokenizer(modelName: string, providerType?: string): Tiktoken {
     const model = modelName.toLowerCase();
     
     try {
-        // 1. Explicitly detect Claude 3.5 (uses a tokenizer very similar to GPT-4o's o200k_base)
-        if (model.includes('claude-3-5') || model.includes('gpt-4o')) {
+        // 1. Explicitly detect Claude 4 and 3.5 (uses a tokenizer very similar to GPT-4o's o200k_base)
+        if (model.includes('claude-4') || model.includes('claude-3-5') || model.includes('gpt-4o')) {
             return encoding_for_model('gpt-4o');
         }
         
-        // 2. Detect Claude 3 / GPT-4 / GPT-3.5 (use cl100k_base)
+        // 2. Detect Claude 3 / 3.7 / GPT-4 / GPT-3.5 (use cl100k_base)
         if (model.includes('claude-3') || model.includes('gpt-4') || model.includes('gpt-3.5')) {
             return encoding_for_model('gpt-4' as any);
         }

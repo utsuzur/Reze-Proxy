@@ -92,6 +92,17 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
     Model: log.modelId
   })) : [];
 
+  // Calculate usage by model
+  const modelUsage = data?.logs ? data.logs.reduce((acc: any, log: any) => {
+    if (!acc[log.modelId]) {
+      acc[log.modelId] = { tokens: 0, cost: 0, requests: 0 };
+    }
+    acc[log.modelId].tokens += (log.inputTokens + log.outputTokens);
+    acc[log.modelId].cost += log.cost;
+    acc[log.modelId].requests += 1;
+    return acc;
+  }, {} as any) : {};
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -172,9 +183,9 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
 
                 {/* Usage Card */}
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                   <div className="text-slate-500 text-sm mb-1">Total Usage</div>
+                   <div className="text-slate-500 text-sm mb-1">Total Tokens</div>
                    <div className="font-semibold text-slate-800">
-                      {data.usageCount.toLocaleString()} Requests
+                      {(data.inputTokens + data.outputTokens).toLocaleString()} Tokens
                    </div>
                    <div className="text-xs text-slate-400 mt-1">
                       {data.inputTokens.toLocaleString()} in / {data.outputTokens.toLocaleString()} out
@@ -217,6 +228,43 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
                    </div>
                 </div>
               </div>
+
+              {/* Usage by Model Section */}
+              {Object.keys(modelUsage).length > 0 && (
+                <div className="bg-white border border-slate-100 rounded-xl p-6 shadow-sm">
+                  <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-reze-500" />
+                    Usage by Model (Recent)
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {(Object.entries(modelUsage) as any[]).sort((a, b) => b[1].tokens - a[1].tokens).map(([modelId, stats]) => (
+                      <div key={modelId} className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                        <div className="text-xs font-mono text-reze-600 mb-2 truncate" title={modelId}>
+                          {modelId}
+                        </div>
+                        <div className="flex justify-between items-end">
+                          <div>
+                            <div className="text-lg font-bold text-slate-800">
+                              {stats.tokens.toLocaleString()}
+                            </div>
+                            <div className="text-[10px] text-slate-500 uppercase tracking-wider">
+                              Total Tokens
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-sm font-semibold text-green-600">
+                              ${stats.cost.toFixed(4)}
+                            </div>
+                            <div className="text-[10px] text-slate-500 uppercase tracking-wider">
+                              {stats.requests} reqs
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Charts Section */}
               <div className="bg-white border border-slate-100 rounded-xl p-6 shadow-sm">
