@@ -1479,6 +1479,7 @@ const distPath = path.join(__dirname, '../dist');
 app.use(express.static(distPath));
 
 import { syncDatabases } from './sync.ts';
+import { initializeSchemas } from './initDb.ts';
 
 // Handle SPA routing - return index.html for any non-API routes
 app.get(/^(?!\/api|\/v1).*$/, (req, res, next) => {
@@ -1488,7 +1489,10 @@ app.get(/^(?!\/api|\/v1).*$/, (req, res, next) => {
 
 const startServer = async () => {
     try {
-        // Run sync if configured
+        // 1. Initialize schema (ensures tables exist in both DBs)
+        await initializeSchemas();
+
+        // 2. Run sync if configured
         if (process.env.DB_SYNC_ON_STARTUP === 'true') {
             console.log('Starting database synchronization...');
             await syncDatabases();
