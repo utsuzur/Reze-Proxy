@@ -1,4 +1,5 @@
-import { db, conn, DbType } from './db.ts';
+import { db, conn } from './db.ts';
+import type { DbType } from './db.ts';
 import * as schema from './schema.ts';
 import { sql } from 'drizzle-orm';
 
@@ -126,11 +127,11 @@ export async function initializeSchemas() {
                     CREATE TABLE IF NOT EXISTS providers (
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
-                        baseUrl TEXT NOT NULL,
-                        apiKey TEXT,
+                        baseurl TEXT NOT NULL,
+                        apikey TEXT,
                         type TEXT DEFAULT 'openai_compatible',
-                        removeTopP INTEGER DEFAULT 0,
-                        lastUsedKeyIndex INTEGER DEFAULT 0,
+                        removetopp INTEGER DEFAULT 0,
+                        lastusedkeyindex INTEGER DEFAULT 0,
                         "createdAt" TIMESTAMP DEFAULT NOW(),
                         "updatedAt" TIMESTAMP DEFAULT NOW()
                     )
@@ -140,18 +141,18 @@ export async function initializeSchemas() {
                 await (db as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS models (
                         id TEXT NOT NULL,
-                        providerId TEXT NOT NULL,
+                        providerid TEXT NOT NULL,
                         name TEXT NOT NULL,
-                        maxInputTokens INTEGER,
-                        maxOutputTokens INTEGER,
-                        pricingModelId TEXT,
-                        inputPricePer1k REAL DEFAULT 0,
-                        outputPricePer1k REAL DEFAULT 0,
-                        isActive INTEGER DEFAULT 1,
+                        maxinputtokens INTEGER,
+                        maxoutputtokens INTEGER,
+                        pricingmodelid TEXT,
+                        inputpriceper1k REAL DEFAULT 0,
+                        outputpriceper1k REAL DEFAULT 0,
+                        isactive INTEGER DEFAULT 1,
                         "createdAt" TIMESTAMP DEFAULT NOW(),
                         "updatedAt" TIMESTAMP DEFAULT NOW(),
-                        PRIMARY KEY (id, providerId),
-                        FOREIGN KEY(providerId) REFERENCES providers(id) ON DELETE CASCADE
+                        PRIMARY KEY (id, providerid),
+                        FOREIGN KEY(providerid) REFERENCES providers(id) ON DELETE CASCADE
                     )
                 `);
 
@@ -163,20 +164,20 @@ export async function initializeSchemas() {
                         token TEXT NOT NULL,
                         "createdAt" TIMESTAMP DEFAULT NOW(),
                         "expiresAt" TIMESTAMP,
-                        accessibleModelIds TEXT,
-                        usageCount INTEGER DEFAULT 0,
-                        inputTokens INTEGER DEFAULT 0,
-                        outputTokens INTEGER DEFAULT 0,
-                        totalCost REAL DEFAULT 0,
-                        maxTokenUsage INTEGER,
-                        maxCostUsage REAL,
-                        isActive INTEGER DEFAULT 1,
-                        maxRequestsPerDay INTEGER,
-                        maxRequestsPerMinute INTEGER,
-                        requestsToday INTEGER DEFAULT 0,
-                        lastRequestDate TEXT,
-                        requestsThisMinute INTEGER DEFAULT 0,
-                        lastRequestMinute TEXT,
+                        accessiblemodelids TEXT,
+                        usagecount INTEGER DEFAULT 0,
+                        inputtokens INTEGER DEFAULT 0,
+                        outputtokens INTEGER DEFAULT 0,
+                        totalcost REAL DEFAULT 0,
+                        maxtokenusage INTEGER,
+                        maxcostusage REAL,
+                        isactive INTEGER DEFAULT 1,
+                        maxrequestsperday INTEGER,
+                        maxrequestsperminute INTEGER,
+                        requeststoday INTEGER DEFAULT 0,
+                        lastrequestdate TEXT,
+                        requeststhisminute INTEGER DEFAULT 0,
+                        lastrequestminute TEXT,
                         "updatedAt" TIMESTAMP DEFAULT NOW()
                     )
                 `);
@@ -185,10 +186,10 @@ export async function initializeSchemas() {
                 await (db as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS request_logs (
                         id SERIAL PRIMARY KEY,
-                        tokenId TEXT NOT NULL,
-                        modelId TEXT NOT NULL,
-                        inputTokens INTEGER DEFAULT 0,
-                        outputTokens INTEGER DEFAULT 0,
+                        tokenid TEXT NOT NULL,
+                        modelid TEXT NOT NULL,
+                        inputtokens INTEGER DEFAULT 0,
+                        outputtokens INTEGER DEFAULT 0,
                         cost REAL DEFAULT 0,
                         timestamp TIMESTAMP DEFAULT NOW()
                     )
@@ -199,13 +200,13 @@ export async function initializeSchemas() {
                     CREATE TABLE IF NOT EXISTS admin_sessions (
                         id SERIAL PRIMARY KEY,
                         selector TEXT NOT NULL UNIQUE,
-                        validatorHash TEXT NOT NULL,
+                        validatorhash TEXT NOT NULL,
                         "createdAt" TIMESTAMP DEFAULT NOW(),
                         "lastSeenAt" TIMESTAMP,
                         "expiresAt" TIMESTAMP NOT NULL,
                         "revokedAt" TIMESTAMP,
                         ip TEXT,
-                        userAgent TEXT,
+                        useragent TEXT,
                         "updatedAt" TIMESTAMP DEFAULT NOW()
                     )
                 `);
@@ -217,7 +218,7 @@ export async function initializeSchemas() {
                         timestamp TIMESTAMP DEFAULT NOW(),
                         event TEXT NOT NULL,
                         ip TEXT,
-                        userAgent TEXT,
+                        useragent TEXT,
                         details TEXT
                     )
                 `);
@@ -226,11 +227,11 @@ export async function initializeSchemas() {
                 await (db as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS error_logs (
                         id SERIAL PRIMARY KEY,
-                        tokenId TEXT,
-                        modelId TEXT,
-                        providerId TEXT,
-                        errorType TEXT,
-                        errorMessage TEXT,
+                        tokenid TEXT,
+                        modelid TEXT,
+                        providerid TEXT,
+                        errortype TEXT,
+                        errormessage TEXT,
                         timestamp TIMESTAMP DEFAULT NOW()
                     )
                 `);
