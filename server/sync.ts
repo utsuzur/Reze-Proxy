@@ -1,92 +1,128 @@
-import { db, getSecondaryDb } from './db.ts';
+import { db, getSecondaryDb, conn, updateSyncState } from './db.ts';
 import * as schema from './schema.ts';
 import { eq, and, sql } from 'drizzle-orm';
 
 const DB_TYPE = process.env.DB_TYPE || 'sqlite';
 
-async function syncTable(tableName: string, primaryDb: any, secondaryDb: any, primaryTable: any, secondaryTable: any, idField: string = 'id', hasUpdatedAt: boolean = true) {
-    console.log(`Syncing table: ${tableName}...`);
+/**
+ * Gets the maximum timestamp value from a set of tables to determine "freshness"
+ * Now also checks the dedicated sync_state table.
+ */
+async function getMaxTimestamp(dbInstance: any, tableConfigs: { table: any, field: string }[], syncStateTable: any) {
+    let maxTs = 0;
     
-    const primaryData = await primaryDb.select().from(primaryTable);
-    const secondaryData = await secondaryDb.select().from(secondaryTable);
+    // 1. Check dedicated sync_state table (Most reliable for deletions)
+    try {
+        const state = await dbInstance.select().from(syncStateTable).where(eq(syncStateTable.id, 'global'));
+        if (state[0]?.lastUpdatedAt) {
+            maxTs = new Date(state[0].lastUpdatedAt).getTime();
+        }
+    } catch (e) {}
 
-    const primaryMap = new Map(primaryData.map((item: any) => [item[idField], item]));
-    const secondaryMap = new Map(secondaryData.map((item: any) => [item[idField], item]));
-
-    const allIds = new Set([...primaryMap.keys(), ...secondaryMap.keys()]);
-    let syncCount = 0;
-
-    for (const id of allIds) {
-        const pItem = primaryMap.get(id) as any;
-        const sItem = secondaryMap.get(id) as any;
-
-        if (!pItem && sItem) {
-            // Missing in primary, add it
-            await primaryDb.insert(primaryTable).values(sItem);
-            syncCount++;
-        } else if (pItem && !sItem) {
-            // Missing in secondary, add it
-            await secondaryDb.insert(secondaryTable).values(pItem);
-            syncCount++;
-        } else if (pItem && sItem && hasUpdatedAt) {
-            // Both exist, check updatedAt
-            const pUpdate = new Date(pItem.updatedAt || 0).getTime();
-            const sUpdate = new Date(sItem.updatedAt || 0).getTime();
-
-            if (pUpdate > sUpdate) {
-                // Primary is newer, update secondary
-                await secondaryDb.update(secondaryTable).set(pItem).where(eq(secondaryTable[idField], id));
-                syncCount++;
-            } else if (sUpdate > pUpdate) {
-                // Secondary is newer, update primary
-                await primaryDb.update(primaryTable).set(sItem).where(eq(primaryTable[idField], id));
-                syncCount++;
+    // 2. Check all other tables as fallback/safety
+    for (const config of tableConfigs) {
+        try {
+            const result = await dbInstance.select({ 
+                maxVal: sql`max(${sql.raw(config.field)})` 
+            }).from(config.table);
+            
+            const val = result[0]?.maxVal;
+            if (val) {
+                const ts = new Date(val).getTime();
+                if (ts > maxTs) maxTs = ts;
             }
+        } catch (e) {
+            // Silently ignore if table/field missing (schema divergence)
         }
     }
-    
-    if (syncCount > 0) {
-        console.log(`Synced ${syncCount} records for ${tableName}.`);
-    }
+    return maxTs;
 }
 
-// Special sync for models (composite primary key)
-async function syncModels(primaryDb: any, secondaryDb: any, primaryTable: any, secondaryTable: any) {
-    console.log(`Syncing table: models...`);
-    const primaryData = await primaryDb.select().from(primaryTable);
-    const secondaryData = await secondaryDb.select().from(secondaryTable);
+/**
+ * Mirror sourceTable to targetTable - Phase 1: Upsert (Insert or Update)
+ */
+async function mirrorUpsert(
+    tableName: string, 
+    sourceDb: any, 
+    targetDb: any, 
+    sourceTable: any, 
+    targetTable: any, 
+    idFields: string[] = ['id']
+) {
+    const sourceData = await sourceDb.select().from(sourceTable);
+    const targetData = await targetDb.select().from(targetTable);
 
-    const getKey = (item: any) => `${item.id}:${item.providerId}`;
-    const primaryMap = new Map(primaryData.map((item: any) => [getKey(item), item]));
-    const secondaryMap = new Map(secondaryData.map((item: any) => [getKey(item), item]));
+    const getKeys = (item: any) => idFields.map(f => item[f]).join(':');
+    const targetMap = new Map(targetData.map((item: any) => [getKeys(item), item]));
 
-    const allKeys = new Set([...primaryMap.keys(), ...secondaryMap.keys()]);
-    let syncCount = 0;
+    let insertCount = 0;
+    let updateCount = 0;
 
-    for (const key of allKeys) {
-        const pItem = primaryMap.get(key) as any;
-        const sItem = secondaryMap.get(key) as any;
+    for (const sItem of sourceData) {
+        const key = getKeys(sItem);
+        const tItem = targetMap.get(key);
+        
+        if (!tItem) {
+            await targetDb.insert(targetTable).values(sItem);
+            insertCount++;
+        } else {
+            let changed = true;
+            if (sItem.updatedAt && tItem.updatedAt) {
+                changed = new Date(sItem.updatedAt).getTime() !== new Date(tItem.updatedAt).getTime();
+            } else if (sItem.timestamp && tItem.timestamp) {
+                changed = new Date(sItem.timestamp).getTime() !== new Date(tItem.timestamp).getTime();
+            } else if (sItem.lastUpdatedAt && tItem.lastUpdatedAt) {
+                changed = new Date(sItem.lastUpdatedAt).getTime() !== new Date(tItem.lastUpdatedAt).getTime();
+            }
 
-        if (!pItem && sItem) {
-            await primaryDb.insert(primaryTable).values(sItem);
-            syncCount++;
-        } else if (pItem && !sItem) {
-            await secondaryDb.insert(secondaryTable).values(pItem);
-            syncCount++;
-        } else if (pItem && sItem) {
-            const pUpdate = new Date(pItem.updatedAt || 0).getTime();
-            const sUpdate = new Date(sItem.updatedAt || 0).getTime();
-
-            if (pUpdate > sUpdate) {
-                await secondaryDb.update(secondaryTable).set(pItem).where(and(eq(secondaryTable.id, pItem.id), eq(secondaryTable.providerId, pItem.providerId)));
-                syncCount++;
-            } else if (sUpdate > pUpdate) {
-                await primaryDb.update(primaryTable).set(sItem).where(and(eq(primaryTable.id, sItem.id), eq(primaryTable.providerId, sItem.providerId)));
-                syncCount++;
+            if (changed) {
+                let whereClause;
+                if (idFields.length === 1) {
+                    whereClause = eq(targetTable[idFields[0]], sItem[idFields[0]]);
+                } else {
+                    whereClause = and(...idFields.map(f => eq(targetTable[f], sItem[f])));
+                }
+                await targetDb.update(targetTable).set(sItem).where(whereClause);
+                updateCount++;
             }
         }
     }
-    if (syncCount > 0) console.log(`Synced ${syncCount} models.`);
+    return { insertCount, updateCount };
+}
+
+/**
+ * Mirror sourceTable to targetTable - Phase 2: Delete
+ */
+async function mirrorDelete(
+    tableName: string, 
+    sourceDb: any, 
+    targetDb: any, 
+    sourceTable: any, 
+    targetTable: any, 
+    idFields: string[] = ['id']
+) {
+    const sourceData = await sourceDb.select().from(sourceTable);
+    const targetData = await targetDb.select().from(targetTable);
+
+    const getKeys = (item: any) => idFields.map(f => item[f]).join(':');
+    const sourceMap = new Map(sourceData.map((item: any) => [getKeys(item), item]));
+
+    let deleteCount = 0;
+
+    for (const tItem of targetData) {
+        const key = getKeys(tItem);
+        if (!sourceMap.has(key)) {
+            let whereClause;
+            if (idFields.length === 1) {
+                whereClause = eq(targetTable[idFields[0]], tItem[idFields[0]]);
+            } else {
+                whereClause = and(...idFields.map(f => eq(targetTable[f], tItem[f])));
+            }
+            await targetDb.delete(targetTable).where(whereClause);
+            deleteCount++;
+        }
+    }
+    return { deleteCount };
 }
 
 export async function syncDatabases() {
@@ -98,50 +134,144 @@ export async function syncDatabases() {
 
     try {
         const sDb = secondary.db;
-        
-        // Map tables for Drizzle (based on DB_TYPE)
         const isPrimaryPg = DB_TYPE === 'postgres';
         
-        const pProviders = isPrimaryPg ? schema.pgProviders : schema.sqliteProviders;
-        const sProviders = isPrimaryPg ? schema.sqliteProviders : schema.pgProviders;
-        
-        const pModels = isPrimaryPg ? schema.pgModels : schema.sqliteModels;
-        const sModels = isPrimaryPg ? schema.sqliteModels : schema.pgModels;
-        
-        const pTokens = isPrimaryPg ? schema.pgTokens : schema.sqliteTokens;
-        const sTokens = isPrimaryPg ? schema.sqliteTokens : schema.pgTokens;
-        
-        const pAdminSessions = isPrimaryPg ? schema.pgAdminSessions : schema.sqliteAdminSessions;
-        const sAdminSessions = isPrimaryPg ? schema.sqliteAdminSessions : schema.pgAdminSessions;
+        // Define table mappings in dependency order
+        const tablePairs = [
+            { 
+                name: 'sync_state', 
+                pTable: isPrimaryPg ? schema.pgSyncState : schema.sqliteSyncState,
+                sTable: isPrimaryPg ? schema.sqliteSyncState : schema.pgSyncState,
+                ids: ['id'],
+                updateField: 'lastUpdatedAt'
+            },
+            { 
+                name: 'providers', 
+                pTable: isPrimaryPg ? schema.pgProviders : schema.sqliteProviders,
+                sTable: isPrimaryPg ? schema.sqliteProviders : schema.pgProviders,
+                ids: ['id'],
+                updateField: 'updatedAt'
+            },
+            { 
+                name: 'tokens', 
+                pTable: isPrimaryPg ? schema.pgTokens : schema.sqliteTokens,
+                sTable: isPrimaryPg ? schema.sqliteTokens : schema.pgTokens,
+                ids: ['id'],
+                updateField: 'updatedAt'
+            },
+            { 
+                name: 'models', 
+                pTable: isPrimaryPg ? schema.pgModels : schema.sqliteModels,
+                sTable: isPrimaryPg ? schema.sqliteModels : schema.pgModels,
+                ids: ['id', 'providerId'],
+                updateField: 'updatedAt'
+            },
+            { 
+                name: 'admin_sessions', 
+                pTable: isPrimaryPg ? schema.pgAdminSessions : schema.sqliteAdminSessions,
+                sTable: isPrimaryPg ? schema.sqliteAdminSessions : schema.pgAdminSessions,
+                ids: ['id'],
+                updateField: 'updatedAt'
+            },
+            { 
+                name: 'request_logs', 
+                pTable: isPrimaryPg ? schema.pgRequestLogs : schema.sqliteRequestLogs,
+                sTable: isPrimaryPg ? schema.sqliteRequestLogs : schema.pgRequestLogs,
+                ids: ['id'],
+                updateField: 'timestamp'
+            },
+            { 
+                name: 'admin_audit_log', 
+                pTable: isPrimaryPg ? schema.pgAdminAuditLog : schema.sqliteAdminAuditLog,
+                sTable: isPrimaryPg ? schema.sqliteAdminAuditLog : schema.pgAdminAuditLog,
+                ids: ['id'],
+                updateField: 'timestamp'
+            },
+            { 
+                name: 'error_logs', 
+                pTable: isPrimaryPg ? schema.pgErrorLogs : schema.sqliteErrorLogs,
+                sTable: isPrimaryPg ? schema.sqliteErrorLogs : schema.pgErrorLogs,
+                ids: ['id'],
+                updateField: 'timestamp'
+            }
+        ];
 
-        const pRequestLogs = isPrimaryPg ? schema.pgRequestLogs : schema.sqliteRequestLogs;
-        const sRequestLogs = isPrimaryPg ? schema.sqliteRequestLogs : schema.pgRequestLogs;
+        const pSyncTable = isPrimaryPg ? schema.pgSyncState : schema.sqliteSyncState;
+        const sSyncTable = isPrimaryPg ? schema.sqliteSyncState : schema.pgSyncState;
 
-        const pAdminAuditLog = isPrimaryPg ? schema.pgAdminAuditLog : schema.sqliteAdminAuditLog;
-        const sAdminAuditLog = isPrimaryPg ? schema.sqliteAdminAuditLog : schema.pgAdminAuditLog;
+        // 1. Determine Freshness
+        const localMax = await getMaxTimestamp(db, tablePairs.map(tp => ({ table: tp.pTable, field: tp.updateField })), pSyncTable);
+        const remoteMax = await getMaxTimestamp(sDb, tablePairs.map(tp => ({ table: tp.sTable, field: tp.updateField })), sSyncTable);
 
-        const pErrorLogs = isPrimaryPg ? schema.pgErrorLogs : schema.sqliteErrorLogs;
-        const sErrorLogs = isPrimaryPg ? schema.sqliteErrorLogs : schema.pgErrorLogs;
+        console.log(`Freshness check: Local=${new Date(localMax).toISOString()}, Remote=${new Date(remoteMax).toISOString()}`);
 
-        await syncTable('providers', db, sDb, pProviders, sProviders, 'id', true);
-        await syncModels(db, sDb, pModels, sModels);
-        await syncTable('tokens', db, sDb, pTokens, sTokens, 'id', true);
-        await syncTable('admin_sessions', db, sDb, pAdminSessions, sAdminSessions, 'id', true);
+        if (localMax === 0 && remoteMax === 0) {
+            console.log("Both databases are empty, nothing to sync.");
+            return;
+        }
+
+        // 2. Set Direction (Latest Wins)
+        let sourceDb, targetDb;
+        let pToS = true;
+
+        if (localMax >= remoteMax) {
+            console.log("Local database is newer. Syncing Local -> Remote...");
+            sourceDb = db;
+            targetDb = sDb;
+            pToS = true;
+        } else {
+            console.log("Remote database is newer. Syncing Remote -> Local...");
+            sourceDb = sDb;
+            targetDb = db;
+            pToS = false;
+        }
+
+        // 3. Temporarily disable foreign keys for SQLite if it's the target
+        const isTargetSqlite = pToS ? !isPrimaryPg : isPrimaryPg;
+        const targetConn = pToS ? secondary.conn : conn;
         
-        // Logs (only sync missing ones based on ID for simplicity, or skip if too large)
-        // Note: serial IDs might not align perfectly between DBs if they started at different times
-        // but for now, we'll try to sync them.
-        await syncTable('request_logs', db, sDb, pRequestLogs, sRequestLogs, 'id', false);
-        await syncTable('admin_audit_log', db, sDb, pAdminAuditLog, sAdminAuditLog, 'id', false);
-        await syncTable('error_logs', db, sDb, pErrorLogs, sErrorLogs, 'id', false);
+        if (isTargetSqlite) {
+            try { (targetConn as any).exec('PRAGMA foreign_keys = OFF'); } catch(e) {}
+        }
+
+        try {
+            // Phase 1: Upserts (Forward order)
+            for (const tp of tablePairs) {
+                const sourceTable = pToS ? tp.pTable : tp.sTable;
+                const targetTable = pToS ? tp.sTable : tp.pTable;
+                const { insertCount, updateCount } = await mirrorUpsert(tp.name, sourceDb, targetDb, sourceTable, targetTable, tp.ids);
+                if (insertCount > 0 || updateCount > 0) {
+                    console.log(`Synced ${tp.name} (Upsert): ${insertCount} ins, ${updateCount} upd.`);
+                }
+            }
+
+            // Phase 2: Deletes (Reverse order)
+            for (const tp of [...tablePairs].reverse()) {
+                const sourceTable = pToS ? tp.pTable : tp.sTable;
+                const targetTable = pToS ? tp.sTable : tp.pTable;
+                const { deleteCount } = await mirrorDelete(tp.name, sourceDb, targetDb, sourceTable, targetTable, tp.ids);
+                if (deleteCount > 0) {
+                    console.log(`Synced ${tp.name} (Delete): ${deleteCount} del.`);
+                }
+            }
+            
+            // 4. Ensure sync_state is updated on the target to match the source
+            // (Already handled by mirrorUpsert for the 'sync_state' table in tablePairs)
+            
+        } finally {
+            if (isTargetSqlite) {
+                try { (targetConn as any).exec('PRAGMA foreign_keys = ON'); } catch(e) {}
+            }
+        }
 
         console.log("Database synchronization complete.");
     } catch (err) {
         console.error("Database synchronization failed:", err);
     } finally {
-        // If secondary was SQLite, we should probably close the connection
-        if (DB_TYPE === 'postgres' && (secondary as any).conn) {
+        if (DB_TYPE === 'postgres' && (secondary as any).conn && (secondary as any).conn.close) {
             (secondary as any).conn.close();
+        } else if (DB_TYPE === 'sqlite' && (secondary as any).conn && (secondary as any).conn.end) {
+            (secondary as any).conn.end();
         }
     }
 }

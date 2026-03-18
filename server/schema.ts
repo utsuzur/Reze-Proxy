@@ -3,6 +3,11 @@ import { sqliteTable, text as sqliteText, integer as sqliteInteger, real as sqli
 
 // --- Postgres Schema ---
 
+export const pgSyncState = pgTable('sync_state', {
+  id: text('id').primaryKey(), // We'll just use 'global' as the ID
+  lastUpdatedAt: timestamp('lastUpdatedAt', { mode: 'string' }).defaultNow(),
+});
+
 export const pgProviders = pgTable('providers', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -112,6 +117,11 @@ export const pgErrorLogs = pgTable('error_logs', {
 }));
 
 // --- SQLite Schema ---
+
+export const sqliteSyncState = sqliteTable('sync_state', {
+  id: sqliteText('id').primaryKey(),
+  lastUpdatedAt: sqliteText('lastUpdatedAt'),
+});
 
 export const sqliteProviders = sqliteTable('providers', {
   id: sqliteText('id').primaryKey(),

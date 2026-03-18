@@ -4,7 +4,7 @@ import path from 'path';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import db, { dbReady } from './db.ts';
+import db, { dbReady, updateSyncState } from './db.ts';
 import * as schema from './schema.ts';
 import { eq, and, sql, desc, lt } from 'drizzle-orm';
 
@@ -175,6 +175,7 @@ const auditAdminEvent = async (
      userAgent,
      details: detailsJson
    });
+   await updateSyncState();
  } catch (e) {
    // Don't block auth flows on audit logging failures
    console.error('admin_audit_log insert failed', e);
@@ -234,11 +235,11 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
      return res.status(401).json({ error: 'Unauthorized' });
    }
 
-   // Fire-and-forget lastSeenAt update
-   db.update(adminSessions)
+   // Update lastSeenAt and sync state
+   await db.update(adminSessions)
      .set({ lastSeenAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
-     .where(eq(adminSessions.id, session.id))
-     .then(() => {});
+     .where(eq(adminSessions.id, session.id));
+   await updateSyncState();
 
    (req as any).adminSession = session;
    next();
@@ -300,6 +301,7 @@ app.post('/api/admin/login', async (req, res) => {
        userAgent: req.get('user-agent') || null,
        updatedAt: nowIso
      });
+     await updateSyncState();
      created = true;
      break;
    } catch (e: any) {
@@ -436,6 +438,7 @@ app.post('/api/admin/logout', requireAdmin, async (req, res) => {
    await db.update(adminSessions)
      .set({ revokedAt: nowIso, updatedAt: nowIso })
      .where(eq(adminSessions.id, session.id));
+   await updateSyncState();
      
    await auditAdminEvent(req, 'logout');
 
@@ -455,6 +458,7 @@ app.post('/api/admin/logout-all', requireAdmin, async (req, res) => {
    const result = await db.update(adminSessions)
      .set({ revokedAt: nowIso, updatedAt: nowIso })
      .where(sql`${adminSessions.revokedAt} IS NULL`);
+   await updateSyncState();
 
    // result might not contain 'changes' depending on the driver, but audit is enough
    await auditAdminEvent(req, 'logout_all');
@@ -626,6 +630,7 @@ app.post('/api/providers', requireAdmin, async (req, res) => {
       createdAt: nowIso,
       updatedAt: nowIso
     });
+    await updateSyncState();
     res.json({ id, name, baseUrl, apiKey, type, removeTopP });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -646,6 +651,7 @@ app.put('/api/providers', requireAdmin, async (req, res) => {
         .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, updatedAt: nowIso })
         .where(eq(providers.id, id));
     }
+    await updateSyncState();
     res.json({ updated: 1 });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -656,6 +662,7 @@ app.delete('/api/providers/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
   try {
     await db.delete(providers).where(eq(providers.id, id));
+    await updateSyncState();
     res.json({ deleted: 1 });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -713,6 +720,7 @@ app.post('/api/models', requireAdmin, async (req, res) => {
             }
         });
     }
+    await updateSyncState();
     res.json({ success: true, count: modelData.length });
   } catch (err: any) {
     console.error("Models upsert error:", err);
@@ -736,6 +744,7 @@ app.put('/api/models', requireAdmin, async (req, res) => {
                 updatedAt: nowIso
             })
             .where(and(eq(models.id, m.id), eq(models.providerId, m.providerId)));
+        await updateSyncState();
         res.json({ updated: 1 });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -787,6 +796,7 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
       creditBalance: creditBalance || 0,
       updatedAt: nowIso
     });
+    await updateSyncState();
     res.json(req.body);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -814,6 +824,7 @@ app.put('/api/tokens', requireAdmin, async (req, res) => {
     if (token) updateData.token = token;
 
     await db.update(tokens).set(updateData).where(eq(tokens.id, id));
+    await updateSyncState();
     res.json({ updated: 1 });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -824,6 +835,7 @@ app.delete('/api/tokens/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
   try {
     await db.delete(tokens).where(eq(tokens.id, id));
+    await updateSyncState();
     res.json({ deleted: 1 });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -839,6 +851,7 @@ app.delete('/api/logs/prune', requireAdmin, async (req, res) => {
 
     try {
         await db.delete(requestLogs).where(lt(requestLogs.timestamp, timestamp));
+        await updateSyncState();
         res.json({ success: true, message: `Pruned logs older than ${timestamp.toISOString()}` });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -857,6 +870,7 @@ app.get('/api/errors', requireAdmin, async (req, res) => {
 app.delete('/api/errors/prune', requireAdmin, async (req, res) => {
     try {
         await db.delete(errorLogs);
+        await updateSyncState();
         res.json({ success: true, message: `Cleared all error logs` });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -902,6 +916,7 @@ app.put('/api/my-token/name', async (req, res) => {
         if (!row) return res.status(404).json({ error: "Invalid token" });
 
         await db.update(tokens).set({ name, updatedAt: new Date().toISOString() }).where(eq(tokens.id, row.id));
+        await updateSyncState();
         res.json({ success: true, name });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -1050,6 +1065,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
         lastRequestMinute: currentMinuteStr,
         updatedAt: now.toISOString()
     }).where(eq(tokens.id, row.id));
+    await updateSyncState();
 
     let body = req.body;
     if (inputFormat === 'anthropic') {
@@ -1250,6 +1266,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                    errorMessage: `Key Index ${keyIndex} - Status ${proxyRes.status}: ${errorText}`,
                    timestamp: new Date().toISOString()
                });
+               await updateSyncState();
 
                if (currentAttempt < apiKeys.length) continue;
 
@@ -1264,6 +1281,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             }
 
             await db.update(providers).set({ lastUsedKeyIndex: keyIndex, updatedAt: new Date().toISOString() }).where(eq(providers.id, modelRow.providerId));
+            await updateSyncState();
             success = true;
 
             if (isStreaming) {
@@ -1428,6 +1446,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                 cost,
                                 timestamp: new Date().toISOString()
                             });
+                            await updateSyncState();
                         } catch (dbErr) {
                             console.error("Error updating usage after stream:", dbErr);
                         }
@@ -1478,6 +1497,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 cost,
                 timestamp: new Date().toISOString()
             });
+            await updateSyncState();
 
             return res.json(data);
 
@@ -1491,6 +1511,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                     errorMessage: `Key Index ${keyIndex} - ${e.message || String(e)}`,
                     timestamp: new Date().toISOString()
                 });
+                await updateSyncState();
             } catch (dbErr) {
                 console.error("Failed to log error to DB:", dbErr);
             }

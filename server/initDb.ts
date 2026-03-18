@@ -11,6 +11,11 @@ async function initializeTableSchema(database: any, connection: any, type: strin
     if (type === 'sqlite') {
         const sqlite = connection as any; // better-sqlite3 instance
         sqlite.exec(`
+            CREATE TABLE IF NOT EXISTS sync_state (
+                id TEXT PRIMARY KEY,
+                lastUpdatedAt TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS providers (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -129,6 +134,14 @@ async function initializeTableSchema(database: any, connection: any, type: strin
             if (!tableExists.rows[0].exists) {
                 console.log('PostgreSQL tables missing. Initializing schema...');
                 
+                // sync_state
+                await (database as any).execute(sql`
+                    CREATE TABLE IF NOT EXISTS sync_state (
+                        id TEXT PRIMARY KEY,
+                        "lastUpdatedAt" TIMESTAMP DEFAULT NOW()
+                    )
+                `);
+
                 // providers
                 await (database as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS providers (
@@ -252,6 +265,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 // Migration for existing Postgres tables
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tokentype TEXT DEFAULT 'rpd'`); } catch(e) {}
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS creditbalance REAL DEFAULT 0`); } catch(e) {}
+                try { await (database as any).execute(sql`CREATE TABLE IF NOT EXISTS sync_state (id TEXT PRIMARY KEY, "lastUpdatedAt" TIMESTAMP DEFAULT NOW())`); } catch(e) {}
             }
         } catch (err) {
             console.error('Failed to initialize PostgreSQL schema:', err);
