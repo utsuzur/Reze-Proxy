@@ -767,7 +767,7 @@ app.get('/api/tokens', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/tokens', requireAdmin, async (req, res) => {
-  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage } = req.body;
+  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
   try {
     await db.insert(tokens).values({
@@ -783,6 +783,8 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
       maxRequestsPerMinute,
       maxTokenUsage,
       maxCostUsage,
+      tokenType: tokenType || 'rpd',
+      creditBalance: creditBalance || 0,
       updatedAt: nowIso
     });
     res.json(req.body);
@@ -792,7 +794,7 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
 });
 
 app.put('/api/tokens', requireAdmin, async (req, res) => {
-  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage } = req.body;
+  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
   
   try {
@@ -805,6 +807,8 @@ app.put('/api/tokens', requireAdmin, async (req, res) => {
       maxRequestsPerMinute,
       maxTokenUsage,
       maxCostUsage,
+      tokenType,
+      creditBalance,
       updatedAt: nowIso
     };
     if (token) updateData.token = token;
@@ -1006,6 +1010,13 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     if (row.maxCostUsage && row.maxCostUsage > 0) {
         if ((row.totalCost || 0) >= row.maxCostUsage) {
             return res.status(403).json({ error: { message: "Budget limit reached. Please contact admin to increase balance." } });
+        }
+    }
+
+    // Credit System check
+    if (row.tokenType === 'credits') {
+        if ((row.creditBalance || 0) <= 0) {
+            return res.status(403).json({ error: { message: "Insufficient credits. Please contact admin to top up." } });
         }
     }
 
@@ -1393,13 +1404,19 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                             const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId, modelRow.providerType);
                             const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
-                            await db.update(tokens).set({
+                            const updateValues: any = {
                                 usageCount: (row.usageCount || 0) + 1,
                                 inputTokens: (row.inputTokens || 0) + inputTokens,
                                 outputTokens: (row.outputTokens || 0) + outputTokens,
                                 totalCost: (row.totalCost || 0) + cost,
                                 updatedAt: new Date().toISOString()
-                            }).where(eq(tokens.id, row.id));
+                            };
+
+                            if (row.tokenType === 'credits') {
+                                updateValues.creditBalance = (row.creditBalance || 0) - cost;
+                            }
+
+                            await db.update(tokens).set(updateValues).where(eq(tokens.id, row.id));
 
                             await db.insert(requestLogs).values({
                                 tokenId: row.id,
@@ -1437,13 +1454,19 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             const outputTokens = data.usage?.completion_tokens || countTokens(outputContent, modelId, modelRow.providerType);
             const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
-            await db.update(tokens).set({
+            const updateValues: any = {
                 usageCount: (row.usageCount || 0) + 1,
                 inputTokens: (row.inputTokens || 0) + inputTokens,
                 outputTokens: (row.outputTokens || 0) + outputTokens,
                 totalCost: (row.totalCost || 0) + cost,
                 updatedAt: new Date().toISOString()
-            }).where(eq(tokens.id, row.id));
+            };
+
+            if (row.tokenType === 'credits') {
+                updateValues.creditBalance = (row.creditBalance || 0) - cost;
+            }
+
+            await db.update(tokens).set(updateValues).where(eq(tokens.id, row.id));
 
             await db.insert(requestLogs).values({
                 tokenId: row.id,

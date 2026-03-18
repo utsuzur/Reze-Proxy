@@ -29,6 +29,8 @@ interface TokenData {
   maxTokenUsage: number | null;
   maxCostUsage: number | null;
   remainingRequestsToday: number | null;
+  tokenType?: 'rpd' | 'credits';
+  creditBalance?: number;
   isActive: boolean;
   logs: Log[];
 }
@@ -213,9 +215,13 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
 
                 {/* Budget Card */}
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                   <div className="text-slate-500 text-sm mb-1">Budget Balance</div>
+                   <div className="text-slate-500 text-sm mb-1">{data.tokenType === 'credits' ? 'Credit Balance' : 'Budget Balance'}</div>
                    <div className="font-semibold text-slate-800">
-                      {data.maxCostUsage ? (
+                      {data.tokenType === 'credits' ? (
+                          <span className={(data.creditBalance || 0) <= 0 ? "text-red-500" : "text-green-600"}>
+                              ${(data.creditBalance || 0).toFixed(3)} left
+                          </span>
+                      ) : data.maxCostUsage ? (
                           <span className={(data.totalCost / data.maxCostUsage) > 0.9 ? "text-red-500" : "text-green-600"}>
                               ${(data.maxCostUsage - data.totalCost).toFixed(3)} left
                           </span>
@@ -224,7 +230,11 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
                       )}
                    </div>
                    <div className="text-xs text-slate-400 mt-1">
-                      Spent: ${data.totalCost.toFixed(3)} {data.maxCostUsage ? `of $${data.maxCostUsage.toFixed(2)}` : ''}
+                      {data.tokenType === 'credits' ? (
+                          `Spent: $${data.totalCost.toFixed(3)}`
+                      ) : (
+                          `Spent: $${data.totalCost.toFixed(3)} ${data.maxCostUsage ? `of $${data.maxCostUsage.toFixed(2)}` : ''}`
+                      )}
                    </div>
                 </div>
               </div>

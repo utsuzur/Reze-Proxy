@@ -36,6 +36,8 @@ export interface UserToken {
   maxTokenUsage?: number;
   maxCostUsage?: number; // Budget in USD
   isActive: boolean;
+  tokenType?: 'rpd' | 'credits';
+  creditBalance?: number;
 }
 
 export interface AdminConfig {

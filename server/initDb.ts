@@ -1,15 +1,15 @@
-import { db, conn } from './db.ts';
+import { db, conn, getSecondaryDb } from './db.ts';
 import type { DbType } from './db.ts';
 import * as schema from './schema.ts';
 import { sql } from 'drizzle-orm';
 
 const DB_TYPE = process.env.DB_TYPE || 'sqlite';
 
-export async function initializeSchemas() {
-    console.log(`Checking schema initialization for ${DB_TYPE}...`);
+async function initializeTableSchema(database: any, connection: any, type: string) {
+    console.log(`Checking schema initialization for ${type}...`);
 
-    if (DB_TYPE === 'sqlite') {
-        const sqlite = conn as any; // better-sqlite3 instance
+    if (type === 'sqlite') {
+        const sqlite = connection as any; // better-sqlite3 instance
         sqlite.exec(`
             CREATE TABLE IF NOT EXISTS providers (
                 id TEXT PRIMARY KEY,
@@ -59,6 +59,8 @@ export async function initializeSchemas() {
                 lastRequestDate TEXT,
                 requestsThisMinute INTEGER DEFAULT 0,
                 lastRequestMinute TEXT,
+                tokenType TEXT DEFAULT 'rpd',
+                creditBalance REAL DEFAULT 0,
                 updatedAt TEXT
             );
 
@@ -106,13 +108,18 @@ export async function initializeSchemas() {
                 FOREIGN KEY(tokenId) REFERENCES tokens(id) ON DELETE SET NULL
             );
         `);
+
+        // Migration: Add columns if they don't exist
+        try { sqlite.exec("ALTER TABLE tokens ADD COLUMN tokenType TEXT DEFAULT 'rpd'"); } catch(e) {}
+        try { sqlite.exec("ALTER TABLE tokens ADD COLUMN creditBalance REAL DEFAULT 0"); } catch(e) {}
+
         console.log('SQLite schema checked/initialized.');
     }
 
-    if (DB_TYPE === 'postgres') {
+    if (type === 'postgres') {
         try {
             // Check if a known table exists
-            const tableExists = await (db as any).execute(sql`
+            const tableExists = await (database as any).execute(sql`
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'providers'
@@ -123,7 +130,7 @@ export async function initializeSchemas() {
                 console.log('PostgreSQL tables missing. Initializing schema...');
                 
                 // providers
-                await (db as any).execute(sql`
+                await (database as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS providers (
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
@@ -138,7 +145,7 @@ export async function initializeSchemas() {
                 `);
 
                 // models
-                await (db as any).execute(sql`
+                await (database as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS models (
                         id TEXT NOT NULL,
                         providerid TEXT NOT NULL,
@@ -157,7 +164,7 @@ export async function initializeSchemas() {
                 `);
 
                 // tokens
-                await (db as any).execute(sql`
+                await (database as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS tokens (
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
@@ -178,12 +185,14 @@ export async function initializeSchemas() {
                         lastrequestdate TEXT,
                         requeststhisminute INTEGER DEFAULT 0,
                         lastrequestminute TEXT,
+                        tokentype TEXT DEFAULT 'rpd',
+                        creditbalance REAL DEFAULT 0,
                         "updatedAt" TIMESTAMP DEFAULT NOW()
                     )
                 `);
 
                 // request_logs
-                await (db as any).execute(sql`
+                await (database as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS request_logs (
                         id SERIAL PRIMARY KEY,
                         tokenid TEXT NOT NULL,
@@ -196,7 +205,7 @@ export async function initializeSchemas() {
                 `);
 
                 // admin_sessions
-                await (db as any).execute(sql`
+                await (database as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS admin_sessions (
                         id SERIAL PRIMARY KEY,
                         selector TEXT NOT NULL UNIQUE,
@@ -212,7 +221,7 @@ export async function initializeSchemas() {
                 `);
 
                 // admin_audit_log
-                await (db as any).execute(sql`
+                await (database as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS admin_audit_log (
                         id SERIAL PRIMARY KEY,
                         timestamp TIMESTAMP DEFAULT NOW(),
@@ -224,7 +233,7 @@ export async function initializeSchemas() {
                 `);
 
                 // error_logs
-                await (db as any).execute(sql`
+                await (database as any).execute(sql`
                     CREATE TABLE IF NOT EXISTS error_logs (
                         id SERIAL PRIMARY KEY,
                         tokenid TEXT,
@@ -238,11 +247,38 @@ export async function initializeSchemas() {
 
                 console.log('PostgreSQL schema initialized successfully.');
             } else {
-                console.log('PostgreSQL schema already exists.');
+                console.log('PostgreSQL schema already exists. Checking for missing columns...');
+                
+                // Migration for existing Postgres tables
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tokentype TEXT DEFAULT 'rpd'`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS creditbalance REAL DEFAULT 0`); } catch(e) {}
             }
         } catch (err) {
             console.error('Failed to initialize PostgreSQL schema:', err);
             throw err;
+        }
+    }
+}
+
+export async function initializeSchemas() {
+    // Initialize primary DB
+    await initializeTableSchema(db, conn, DB_TYPE);
+
+    // If sync is enabled, also initialize secondary DB
+    if (process.env.DB_SYNC_ON_STARTUP === 'true') {
+        const secondary = getSecondaryDb();
+        if (secondary) {
+            console.log("Initializing secondary database schema...");
+            const secondaryType = DB_TYPE === 'postgres' ? 'sqlite' : 'postgres';
+            await initializeTableSchema(secondary.db, secondary.conn, secondaryType);
+            
+            // If secondary was Postgres, we should close the pool we just created to avoid leaks
+            // but sync.ts will create its own. For simplicity, we can let it be or close it.
+            if (secondaryType === 'postgres') {
+                (secondary.conn as any).end();
+            } else {
+                (secondary.conn as any).close();
+            }
         }
     }
 }

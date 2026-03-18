@@ -51,6 +51,8 @@ export const pgTokens = pgTable('tokens', {
   lastRequestDate: text('lastrequestdate'),
   requestsThisMinute: integer('requeststhisminute').default(0),
   lastRequestMinute: text('lastrequestminute'),
+  tokenType: text('tokentype').default('rpd'),
+  creditBalance: real('creditbalance').default(0),
   updatedAt: timestamp('updatedAt', { mode: 'string' }).defaultNow(),
 }, (table) => ({
   tokenIdx: uniqueIndex('idx_tokens_token').on(table.token),
@@ -159,6 +161,8 @@ export const sqliteTokens = sqliteTable('tokens', {
   lastRequestDate: sqliteText('lastRequestDate'),
   requestsThisMinute: sqliteInteger('requestsThisMinute').default(0),
   lastRequestMinute: sqliteText('lastRequestMinute'),
+  tokenType: sqliteText('tokenType').default('rpd'),
+  creditBalance: sqliteReal('creditBalance').default(0),
   updatedAt: sqliteText('updatedAt'),
 });
 

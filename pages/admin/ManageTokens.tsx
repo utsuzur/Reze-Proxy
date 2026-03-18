@@ -16,6 +16,8 @@ const ManageTokens: React.FC = () => {
   const [maxRequestsPerMinute, setMaxRequestsPerMinute] = useState<number | ''>('');
   const [maxTokenUsage, setMaxTokenUsage] = useState<number | ''>('');
   const [maxCostUsage, setMaxCostUsage] = useState<number | ''>('');
+  const [tokenType, setTokenType] = useState<'rpd' | 'credits'>('rpd');
+  const [creditBalance, setCreditBalance] = useState<number | ''>('');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
   const [isActive, setIsActive] = useState(true);
@@ -54,7 +56,9 @@ const ManageTokens: React.FC = () => {
         maxRequestsPerDay: maxRequestsPerDay !== '' ? Number(maxRequestsPerDay) : undefined,
         maxRequestsPerMinute: maxRequestsPerMinute !== '' ? Number(maxRequestsPerMinute) : undefined,
         maxTokenUsage: maxTokenUsage !== '' ? Number(maxTokenUsage) : undefined,
-        maxCostUsage: maxCostUsage !== '' ? Number(maxCostUsage) : undefined
+        maxCostUsage: maxCostUsage !== '' ? Number(maxCostUsage) : undefined,
+        tokenType: tokenType,
+        creditBalance: creditBalance !== '' ? Number(creditBalance) : 0
       });
       setTokens(await storageService.getTokens());
       resetForm();
@@ -76,7 +80,9 @@ const ManageTokens: React.FC = () => {
           maxRequestsPerDay: maxRequestsPerDay !== '' ? Number(maxRequestsPerDay) : undefined,
           maxRequestsPerMinute: maxRequestsPerMinute !== '' ? Number(maxRequestsPerMinute) : undefined,
           maxTokenUsage: maxTokenUsage !== '' ? Number(maxTokenUsage) : undefined,
-          maxCostUsage: maxCostUsage !== '' ? Number(maxCostUsage) : undefined
+          maxCostUsage: maxCostUsage !== '' ? Number(maxCostUsage) : undefined,
+          tokenType: tokenType,
+          creditBalance: creditBalance !== '' ? Number(creditBalance) : 0
       };
 
       await storageService.saveToken(newToken);
@@ -93,6 +99,8 @@ const ManageTokens: React.FC = () => {
     setMaxRequestsPerMinute(token.maxRequestsPerMinute || '');
     setMaxTokenUsage(token.maxTokenUsage || '');
     setMaxCostUsage(token.maxCostUsage || '');
+    setTokenType(token.tokenType || 'rpd');
+    setCreditBalance(token.creditBalance !== undefined ? token.creditBalance : '');
     setSelectedModels(token.accessibleModelIds);
     setIsActive(token.isActive);
     setIsCreating(true);
@@ -111,6 +119,8 @@ const ManageTokens: React.FC = () => {
     setMaxRequestsPerMinute('');
     setMaxTokenUsage('');
     setMaxCostUsage('');
+    setTokenType('rpd');
+    setCreditBalance('');
     setSelectedModels([]);
     setIsActive(true);
   };
@@ -226,19 +236,59 @@ const ManageTokens: React.FC = () => {
                         />
                         <p className="text-[10px] text-slate-400 mt-1">Total combined input/output tokens.</p>
                     </div>
+                    {tokenType === 'rpd' && (
+                      <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">Max Budget (USD)</label>
+                          <input 
+                              type="number" 
+                              min="0" 
+                              step="0.01" 
+                              value={maxCostUsage}
+                              onChange={(e) => setMaxCostUsage(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                              className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none"
+                              placeholder="Unlimited (e.g. 5.00)"
+                          />
+                          <p className="text-[10px] text-slate-400 mt-1">Enforce limit based on calculated token costs.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-reze-50/50 p-4 rounded-xl border border-reze-100">
                     <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Max Budget (USD)</label>
-                        <input 
-                            type="number" 
-                            min="0"
-                            step="0.01"
-                            value={maxCostUsage}
-                            onChange={(e) => setMaxCostUsage(e.target.value === '' ? '' : parseFloat(e.target.value))}
-                            className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none"
-                            placeholder="Unlimited (e.g. 5.00)"
-                        />
-                        <p className="text-[10px] text-slate-400 mt-1">Enforce limit based on calculated token costs.</p>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">Token System</label>
+                        <div className="flex gap-2">
+                            <button 
+                                onClick={() => setTokenType('rpd')}
+                                className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-all ${tokenType === 'rpd' ? 'bg-reze-600 border-reze-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-600 hover:border-reze-300'}`}
+                            >
+                                Request/Day
+                            </button>
+                            <button 
+                                onClick={() => setTokenType('credits')}
+                                className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-all ${tokenType === 'credits' ? 'bg-reze-600 border-reze-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-600 hover:border-reze-300'}`}
+                            >
+                                Credits
+                            </button>
+                        </div>
                     </div>
+                    {tokenType === 'credits' && (
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Credit Balance (USD)</label>
+                            <div className="relative">
+                                <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                <input 
+                                    type="number" 
+                                    min="0"
+                                    step="0.01"
+                                    value={creditBalance}
+                                    onChange={(e) => setCreditBalance(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                                    className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none"
+                                    placeholder="0.00"
+                                />
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-1">Users can only make requests if balance &gt; 0.</p>
+                        </div>
+                    )}
                   </div>
 
                   {editingToken && (
@@ -413,7 +463,7 @@ const ManageTokens: React.FC = () => {
                   </div>
                 )}
 
-                {token.maxCostUsage && (
+                {token.tokenType === 'rpd' && token.maxCostUsage && (
                   <div className="mb-4">
                     <div className="flex justify-between text-[10px] mb-1">
                       <span className="text-slate-500 font-medium uppercase tracking-wider">Budget Used</span>
@@ -428,6 +478,12 @@ const ManageTokens: React.FC = () => {
                         style={{ width: `${Math.min(100, (token.totalCost / token.maxCostUsage) * 100)}%` }}
                       ></div>
                     </div>
+                  </div>
+                )}
+                {token.tokenType === 'credits' && (
+                  <div className="mb-4 p-2 bg-reze-50 rounded-lg border border-reze-100 flex justify-between items-center">
+                    <span className="text-[10px] text-reze-600 font-bold uppercase tracking-wider">Credit Balance</span>
+                    <span className="text-lg font-bold text-reze-700">${(token.creditBalance || 0).toFixed(3)}</span>
                   </div>
                 )}
 
@@ -505,7 +561,7 @@ const ManageTokens: React.FC = () => {
                                         </div>
                                     </div>
                                 )}
-                                {token.maxCostUsage && (
+                                {token.tokenType === 'rpd' && token.maxCostUsage && (
                                     <div className="w-32">
                                         <div className="flex justify-between text-[9px] mb-1">
                                             <span className="text-slate-400 uppercase tracking-tighter">Budget Limit</span>
@@ -522,13 +578,30 @@ const ManageTokens: React.FC = () => {
                                         </div>
                                     </div>
                                 )}
-                                {!token.maxRequestsPerDay && !token.maxTokenUsage && !token.maxCostUsage && (
+                                {token.tokenType === 'credits' && (
+                                    <div className="w-32 bg-reze-50 p-2 rounded-lg border border-reze-100">
+                                        <div className="text-[8px] text-reze-600 font-bold uppercase tracking-tight mb-1">Available Credits</div>
+                                        <div className="text-sm font-bold text-reze-700 leading-none">
+                                            ${(token.creditBalance || 0).toFixed(3)}
+                                        </div>
+                                    </div>
+                                )}
+                                {token.tokenType === 'rpd' && !token.maxRequestsPerDay && !token.maxTokenUsage && !token.maxCostUsage && (
                                     <div className="text-[10px] text-slate-400 italic">No limits set</div>
+                                )}
+                                {token.tokenType === 'credits' && !token.maxRequestsPerDay && !token.maxTokenUsage && (
+                                    <div className="text-[10px] text-slate-400 italic">No usage limits</div>
                                 )}
                                 <div className="text-[10px] text-slate-500 flex items-center gap-1 pt-1 border-t border-slate-50 mt-1">
                                     <DollarSign className="w-3 h-3 text-green-600" />
                                     Total Spent: <span className="font-bold text-slate-700">${token.totalCost.toFixed(3)}</span>
                                 </div>
+                                {token.tokenType === 'credits' && (
+                                    <div className="text-[10px] text-reze-600 flex items-center gap-1 pt-1 border-t border-slate-50 mt-1">
+                                        <RefreshCw className="w-3 h-3" />
+                                        Balance: <span className="font-bold">${(token.creditBalance || 0).toFixed(3)}</span>
+                                    </div>
+                                )}
                             </div>
                         </td>
                         <td className="px-6 py-4 font-mono text-slate-500">
