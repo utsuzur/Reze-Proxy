@@ -1277,6 +1277,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                     const decoder = new TextDecoder();
                     let accumulatedOutput = "";
                     let streamUsage: { prompt_tokens?: number, completion_tokens?: number } = {};
+                    let lineBuffer = "";
 
                     try {
                         while (true) {
@@ -1284,8 +1285,11 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                             if (done) break;
                             const chunk = decoder.decode(value, { stream: true });
                             
+                            const fullChunk = lineBuffer + chunk;
+                            const lines = fullChunk.split('\n');
+                            lineBuffer = lines.pop() || "";
+
                             if (isAnthropic) {
-                                const lines = chunk.split('\n');
                                 for (const line of lines) {
                                     if (line.startsWith('data: ')) {
                                         try {
@@ -1340,7 +1344,6 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                 // Destination is OpenAI
                                 if (inputFormat === 'anthropic') {
                                     // Convert OpenAI SSE to Anthropic SSE
-                                    const lines = chunk.split('\n');
                                     for (const line of lines) {
                                         if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                                             try {
@@ -1375,7 +1378,6 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                 } else {
                                     res.write(chunk);
                                     
-                                    const lines = chunk.split('\n');
                                     for (const line of lines) {
                                         if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                                             try {
