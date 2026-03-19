@@ -235,11 +235,16 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
      return res.status(401).json({ error: 'Unauthorized' });
    }
 
-   // Update lastSeenAt and sync state
-   await db.update(adminSessions)
-     .set({ lastSeenAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
-     .where(eq(adminSessions.id, session.id));
-   await updateSyncState();
+   // Update lastSeenAt and sync state only if it's been more than 5 minutes
+   const lastSeen = session.lastSeenAt ? new Date(session.lastSeenAt).getTime() : 0;
+   const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+   
+   if (lastSeen < fiveMinutesAgo) {
+     await db.update(adminSessions)
+       .set({ lastSeenAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+       .where(eq(adminSessions.id, session.id));
+     await updateSyncState();
+   }
 
    (req as any).adminSession = session;
    next();
