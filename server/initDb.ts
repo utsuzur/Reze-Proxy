@@ -1,9 +1,130 @@
 import { db, conn, getSecondaryDb } from './db.ts';
 import type { DbType } from './db.ts';
 import * as schema from './schema.ts';
-import { sql } from 'drizzle-orm';
+import { sql, eq } from 'drizzle-orm';
 
 const DB_TYPE = process.env.DB_TYPE || 'sqlite';
+
+// Helper to get the correct table based on DB_TYPE
+const getTable = (tableName: string, type: string) => {
+  const prefix = type === 'postgres' ? 'pg' : 'sqlite';
+  const key = `${prefix}${tableName.charAt(0).toUpperCase()}${tableName.slice(1)}` as keyof typeof schema;
+  return schema[key] as any;
+};
+
+async function seedData(database: any, type: string) {
+    console.log(`Seeding initial data for ${type}...`);
+    
+    const providersTable = getTable('providers', type);
+    const modelsTable = getTable('models', type);
+    const tokensTable = getTable('tokens', type);
+
+    // 1. Seed Providers
+    const defaultProviders = [
+        {
+            id: 'openai',
+            name: 'OpenAI',
+            baseUrl: 'https://api.openai.com/v1',
+            type: 'openai_compatible',
+            apiKey: '', // User needs to fill this
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        },
+        {
+            id: 'anthropic',
+            name: 'Anthropic',
+            baseUrl: 'https://api.anthropic.com/v1',
+            type: 'anthropic',
+            apiKey: '', // User needs to fill this
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        },
+        {
+            id: 'groq',
+            name: 'Groq',
+            baseUrl: 'https://api.groq.com/openai/v1',
+            type: 'openai_compatible',
+            apiKey: '', // User needs to fill this
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        }
+    ];
+
+    for (const provider of defaultProviders) {
+        try {
+            const existing = await database.select().from(providersTable).where(eq(providersTable.id, provider.id)).limit(1);
+            if (existing.length === 0) {
+                await database.insert(providersTable).values(provider);
+                console.log(`  Added provider: ${provider.name}`);
+            }
+        } catch (e) {
+            console.error(`  Failed to seed provider ${provider.name}:`, e);
+        }
+    }
+
+    // 2. Seed Models
+    const defaultModels = [
+        // OpenAI
+        { id: 'gpt-4o', providerId: 'openai', name: 'GPT-4o', maxInputTokens: 128000, maxOutputTokens: 4096, inputPricePer1k: 0.005, outputPricePer1k: 0.015, isActive: 1 },
+        { id: 'gpt-4o-mini', providerId: 'openai', name: 'GPT-4o Mini', maxInputTokens: 128000, maxOutputTokens: 16384, inputPricePer1k: 0.00015, outputPricePer1k: 0.0006, isActive: 1 },
+        { id: 'gpt-4-turbo', providerId: 'openai', name: 'GPT-4 Turbo', maxInputTokens: 128000, maxOutputTokens: 4096, inputPricePer1k: 0.01, outputPricePer1k: 0.03, isActive: 1 },
+        
+        // Anthropic
+        { id: 'claude-3-5-sonnet-20240620', providerId: 'anthropic', name: 'Claude 3.5 Sonnet', maxInputTokens: 200000, maxOutputTokens: 8192, inputPricePer1k: 0.003, outputPricePer1k: 0.015, isActive: 1 },
+        { id: 'claude-3-opus-20240229', providerId: 'anthropic', name: 'Claude 3 Opus', maxInputTokens: 200000, maxOutputTokens: 4096, inputPricePer1k: 0.015, outputPricePer1k: 0.075, isActive: 1 },
+        { id: 'claude-3-haiku-20240307', providerId: 'anthropic', name: 'Claude 3 Haiku', maxInputTokens: 200000, maxOutputTokens: 4096, inputPricePer1k: 0.00025, outputPricePer1k: 0.00125, isActive: 1 },
+
+        // Groq
+        { id: 'llama3-70b-8192', providerId: 'groq', name: 'Llama 3 70B', maxInputTokens: 8192, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
+        { id: 'llama3-8b-8192', providerId: 'groq', name: 'Llama 3 8B', maxInputTokens: 8192, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
+        { id: 'mixtral-8x7b-32768', providerId: 'groq', name: 'Mixtral 8x7B', maxInputTokens: 32768, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
+    ];
+
+    for (const model of defaultModels) {
+        try {
+            const existing = await database.select().from(modelsTable).where(
+                sql`${modelsTable.id} = ${model.id} AND ${modelsTable.providerId} = ${model.providerId}`
+            ).limit(1);
+            
+            if (existing.length === 0) {
+                await database.insert(modelsTable).values({
+                    ...model,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                });
+                console.log(`  Added model: ${model.name} (${model.providerId})`);
+            }
+        } catch (e) {
+            console.error(`  Failed to seed model ${model.name}:`, e);
+        }
+    }
+
+    // 3. Seed an initial Demo Token if none exists
+    try {
+        const tokens = await database.select().from(tokensTable).limit(1);
+        if (tokens.length === 0) {
+            const demoToken = {
+                id: 'demo-token-id',
+                name: 'Initial Demo Token',
+                token: `reze_${Math.random().toString(36).substring(2, 15)}`,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                isActive: 1,
+                tokenType: 'rpd',
+                creditBalance: 10.0, // Give some initial credits
+                maxRequestsPerDay: 100,
+                accessibleModelIds: '*', // All models
+            };
+            await database.insert(tokensTable).values(demoToken);
+            console.log(`  Added initial demo token: ${demoToken.token}`);
+            console.log(`  IMPORTANT: Use this token to test your setup.`);
+        }
+    } catch (e) {
+        console.error('  Failed to seed initial token:', e);
+    }
+
+    console.log(`Seeding complete for ${type}.`);
+}
 
 async function initializeTableSchema(database: any, connection: any, type: string) {
     console.log(`Checking schema initialization for ${type}...`);
@@ -115,8 +236,39 @@ async function initializeTableSchema(database: any, connection: any, type: strin
         `);
 
         // Migration: Add columns if they don't exist
-        try { sqlite.exec("ALTER TABLE tokens ADD COLUMN tokenType TEXT DEFAULT 'rpd'"); } catch(e) {}
-        try { sqlite.exec("ALTER TABLE tokens ADD COLUMN creditBalance REAL DEFAULT 0"); } catch(e) {}
+        const tablesToMigrate = [
+            { name: 'providers', columns: ['createdAt', 'updatedAt', 'removeTopP', 'lastUsedKeyIndex'] },
+            { name: 'models', columns: ['createdAt', 'updatedAt'] },
+            { name: 'tokens', columns: ['createdAt', 'updatedAt', 'tokenType', 'creditBalance', 'maxRequestsPerDay', 'maxRequestsPerMinute', 'maxTokenUsage', 'maxCostUsage'] },
+            { name: 'admin_sessions', columns: ['createdAt', 'updatedAt'] }
+        ];
+
+        for (const table of tablesToMigrate) {
+            for (const column of table.columns) {
+                try {
+                    // Check if column exists by trying to select it
+                    sqlite.prepare(`SELECT ${column} FROM ${table.name} LIMIT 0`).run();
+                } catch (e: any) {
+                    if (e.message.includes('no such column')) {
+                        try {
+                            const type = column.toLowerCase().includes('price') || column.toLowerCase().includes('balance') || column.toLowerCase().includes('cost') ? 'REAL' : 
+                                         column.toLowerCase().includes('index') || column.toLowerCase().includes('count') || column.toLowerCase().includes('tokens') || column.toLowerCase().includes('topp') || column.toLowerCase().includes('active') ? 'INTEGER' : 'TEXT';
+                            
+                            let colDef = `${column} ${type}`;
+                            if (column === 'tokenType') colDef = "tokenType TEXT DEFAULT 'rpd'";
+                            if (column === 'creditBalance') colDef = "creditBalance REAL DEFAULT 0";
+                            if (column === 'removeTopP') colDef = "removeTopP INTEGER DEFAULT 0";
+                            if (column === 'lastUsedKeyIndex') colDef = "lastUsedKeyIndex INTEGER DEFAULT 0";
+
+                            sqlite.exec(`ALTER TABLE ${table.name} ADD COLUMN ${colDef}`);
+                            console.log(`  Added missing column ${column} to ${table.name}`);
+                        } catch (alterError) {
+                            console.error(`  Failed to add column ${column} to ${table.name}:`, alterError);
+                        }
+                    }
+                }
+            }
+        }
 
         console.log('SQLite schema checked/initialized.');
     }
@@ -265,6 +417,20 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 // Migration for existing Postgres tables
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tokentype TEXT DEFAULT 'rpd'`); } catch(e) {}
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS creditbalance REAL DEFAULT 0`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+                
+                try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS removetopp INTEGER DEFAULT 0`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS lastusedkeyindex INTEGER DEFAULT 0`); } catch(e) {}
+
+                try { await (database as any).execute(sql`ALTER TABLE models ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE models ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+
+                try { await (database as any).execute(sql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+
                 try { await (database as any).execute(sql`CREATE TABLE IF NOT EXISTS sync_state (id TEXT PRIMARY KEY, "lastUpdatedAt" TIMESTAMP DEFAULT NOW())`); } catch(e) {}
             }
         } catch (err) {
@@ -272,6 +438,9 @@ async function initializeTableSchema(database: any, connection: any, type: strin
             throw err;
         }
     }
+
+    // Always seed after initialization (or check)
+    await seedData(database, type);
 }
 
 export async function initializeSchemas() {
@@ -286,8 +455,6 @@ export async function initializeSchemas() {
             const secondaryType = DB_TYPE === 'postgres' ? 'sqlite' : 'postgres';
             await initializeTableSchema(secondary.db, secondary.conn, secondaryType);
             
-            // If secondary was Postgres, we should close the pool we just created to avoid leaks
-            // but sync.ts will create its own. For simplicity, we can let it be or close it.
             if (secondaryType === 'postgres') {
                 (secondary.conn as any).end();
             } else {
