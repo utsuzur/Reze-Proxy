@@ -52,10 +52,25 @@ async function seedData(database: any, type: string) {
 
     for (const provider of defaultProviders) {
         try {
-            const existing = await database.select().from(providersTable).where(eq(providersTable.id, provider.id)).limit(1);
+            // Check by ID or Name
+            const existing = await database.select().from(providersTable).where(
+                sql`${providersTable.id} = ${provider.id} OR ${providersTable.name} = ${provider.name}`
+            ).limit(1);
+
             if (existing.length === 0) {
                 await database.insert(providersTable).values(provider);
                 console.log(`  Added provider: ${provider.name}`);
+            } else {
+                // If it exists but with a different ID/Name, we might want to update it to match our default
+                // but only if it's one of our core providers. For now, just skip to avoid conflicts.
+                // If the ID matches, we can update details.
+                if (existing[0].id === provider.id) {
+                    await database.update(providersTable).set({
+                        baseUrl: provider.baseUrl,
+                        type: provider.type,
+                        updatedAt: new Date().toISOString()
+                    }).where(eq(providersTable.id, provider.id));
+                }
             }
         } catch (e) {
             console.error(`  Failed to seed provider ${provider.name}:`, e);
@@ -82,6 +97,18 @@ async function seedData(database: any, type: string) {
 
     for (const model of defaultModels) {
         try {
+            // Ensure provider exists first to avoid FK error
+            const providerExists = await database.select().from(providersTable).where(eq(providersTable.id, model.providerId)).limit(1);
+            if (providerExists.length === 0) {
+                // Try finding by name in case ID is different but it's the same provider
+                const providerByName = await database.select().from(providersTable).where(eq(providersTable.name, model.providerId.charAt(0).toUpperCase() + model.providerId.slice(1))).limit(1);
+                if (providerByName.length > 0) {
+                    model.providerId = providerByName[0].id;
+                } else {
+                    continue; // Skip if provider truly missing
+                }
+            }
+
             const existing = await database.select().from(modelsTable).where(
                 sql`${modelsTable.id} = ${model.id} AND ${modelsTable.providerId} = ${model.providerId}`
             ).limit(1);
