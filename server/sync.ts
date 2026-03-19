@@ -59,12 +59,23 @@ async function mirrorUpsert(
     let updateCount = 0;
 
     for (const sItem of sourceData) {
+        // Sanitize item: replace null/undefined numeric fields with 0
+        const sanitizedItem = { ...sItem };
+        if (tableName === 'request_logs' || tableName === 'tokens' || tableName === 'models') {
+            const numericFields = ['cost', 'inputTokens', 'outputTokens', 'usageCount', 'inputPricePer1k', 'outputPricePer1k', 'creditBalance'];
+            for (const field of numericFields) {
+                if (Object.prototype.hasOwnProperty.call(sanitizedItem, field) && (sanitizedItem[field] === null || sanitizedItem[field] === undefined)) {
+                    sanitizedItem[field] = 0;
+                }
+            }
+        }
+
         const key = getKeys(sItem);
         const tItem = targetMap.get(key);
         
         if (!tItem) {
             try {
-                await targetDb.insert(targetTable).values(sItem);
+                await targetDb.insert(targetTable).values(sanitizedItem);
                 insertCount++;
             } catch (err: any) {
                 // Handle UNIQUE constraint failures during sync
@@ -72,14 +83,14 @@ async function mirrorUpsert(
                     // If ID is new but Name exists, update the existing record by Name instead
                     try {
                         const whereClause = eq(targetTable.name, sItem.name);
-                        await targetDb.update(targetTable).set(sItem).where(whereClause);
+                        await targetDb.update(targetTable).set(sanitizedItem).where(whereClause);
                         updateCount++;
                     } catch (e) {}
                 } else if (err.message?.includes('UNIQUE') && idFields.length === 1) {
                     // General fallback for single ID tables
                     try {
                         const whereClause = eq(targetTable[idFields[0]], sItem[idFields[0]]);
-                        await targetDb.update(targetTable).set(sItem).where(whereClause);
+                        await targetDb.update(targetTable).set(sanitizedItem).where(whereClause);
                         updateCount++;
                     } catch (e) {}
                 } else {
@@ -103,7 +114,7 @@ async function mirrorUpsert(
                 } else {
                     whereClause = and(...idFields.map(f => eq(targetTable[f], sItem[f])));
                 }
-                await targetDb.update(targetTable).set(sItem).where(whereClause);
+                await targetDb.update(targetTable).set(sanitizedItem).where(whereClause);
                 updateCount++;
             }
         }
