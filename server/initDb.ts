@@ -266,7 +266,12 @@ async function initializeTableSchema(database: any, connection: any, type: strin
         const tablesToMigrate = [
             { name: 'providers', columns: ['createdAt', 'updatedAt', 'removeTopP', 'lastUsedKeyIndex'] },
             { name: 'models', columns: ['createdAt', 'updatedAt', 'pricingModelId', 'inputPricePer1k', 'outputPricePer1k', 'isActive'] },
-            { name: 'tokens', columns: ['createdAt', 'updatedAt', 'tokenType', 'creditBalance', 'maxRequestsPerDay', 'maxRequestsPerMinute', 'maxTokenUsage', 'maxCostUsage'] },
+            { name: 'tokens', columns: [
+                'createdAt', 'updatedAt', 'tokenType', 'creditBalance', 
+                'maxRequestsPerDay', 'maxRequestsPerMinute', 'maxTokenUsage', 'maxCostUsage',
+                'usageCount', 'inputTokens', 'outputTokens', 'totalCost', 'accessibleModelIds',
+                'requestsToday', 'lastRequestDate', 'requestsThisMinute', 'lastRequestMinute'
+            ] },
             { name: 'admin_sessions', columns: ['createdAt', 'updatedAt'] }
         ];
 
