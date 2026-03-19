@@ -242,6 +242,11 @@ export async function syncDatabases() {
             return;
         }
 
+        if (localMax === remoteMax && localMax !== 0) {
+            console.log("Databases are already in sync (timestamps match exactly). Skipping...");
+            return;
+        }
+
         // 2. Set Direction (Latest Wins)
         let sourceDb, targetDb;
         let pToS = true;
