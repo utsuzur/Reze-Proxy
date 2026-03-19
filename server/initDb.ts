@@ -272,7 +272,10 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 'usageCount', 'inputTokens', 'outputTokens', 'totalCost', 'accessibleModelIds',
                 'requestsToday', 'lastRequestDate', 'requestsThisMinute', 'lastRequestMinute'
             ] },
-            { name: 'admin_sessions', columns: ['createdAt', 'updatedAt'] }
+            { name: 'admin_sessions', columns: ['createdAt', 'updatedAt'] },
+            { name: 'request_logs', columns: ['tokenId', 'modelId', 'inputTokens', 'outputTokens', 'cost', 'timestamp'] },
+            { name: 'error_logs', columns: ['tokenId', 'modelId', 'providerId', 'errorType', 'errorMessage', 'timestamp'] },
+            { name: 'admin_audit_log', columns: ['timestamp', 'event', 'ip', 'userAgent', 'details'] }
         ];
 
         for (const table of tablesToMigrate) {
