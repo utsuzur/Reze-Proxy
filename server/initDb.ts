@@ -20,116 +20,90 @@ async function seedData(database: any, type: string) {
     const tokensTable = getTable('tokens', type);
 
     // 1. Seed Providers
-    const defaultProviders = [
-        {
-            id: 'openai',
-            name: 'OpenAI',
-            baseUrl: 'https://api.openai.com/v1',
-            type: 'openai_compatible',
-            apiKey: '', // User needs to fill this
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        },
-        {
-            id: 'anthropic',
-            name: 'Anthropic',
-            baseUrl: 'https://api.anthropic.com/v1',
-            type: 'anthropic',
-            apiKey: '', // User needs to fill this
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        },
-        {
-            id: 'groq',
-            name: 'Groq',
-            baseUrl: 'https://api.groq.com/openai/v1',
-            type: 'openai_compatible',
-            apiKey: '', // User needs to fill this
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        }
-    ];
+    const skipSeeding = process.env.SKIP_SEEDING !== 'false';
+    const existingProviders = await database.select().from(providersTable).limit(1);
+    
+    if (!skipSeeding && existingProviders.length === 0) {
+        console.log("  No providers found, seeding defaults...");
+        const defaultProviders = [
+            {
+                id: 'openai',
+                name: 'OpenAI',
+                baseUrl: 'https://api.openai.com/v1',
+                type: 'openai_compatible',
+                apiKey: '', // User needs to fill this
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            },
+            {
+                id: 'anthropic',
+                name: 'Anthropic',
+                baseUrl: 'https://api.anthropic.com/v1',
+                type: 'anthropic',
+                apiKey: '', // User needs to fill this
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            },
+            {
+                id: 'groq',
+                name: 'Groq',
+                baseUrl: 'https://api.groq.com/openai/v1',
+                type: 'openai_compatible',
+                apiKey: '', // User needs to fill this
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            }
+        ];
 
-    for (const provider of defaultProviders) {
-        try {
-            // Check by ID or Name
-            const existing = await database.select().from(providersTable).where(
-                sql`${providersTable.id} = ${provider.id} OR ${providersTable.name} = ${provider.name}`
-            ).limit(1);
-
-            if (existing.length === 0) {
+        for (const provider of defaultProviders) {
+            try {
                 await database.insert(providersTable).values(provider);
-                console.log(`  Added provider: ${provider.name}`);
-            } else {
-                // If it exists but with a different ID/Name, we might want to update it to match our default
-                // but only if it's one of our core providers. For now, just skip to avoid conflicts.
-                // If the ID matches, we can update details.
-                if (existing[0].id === provider.id) {
-                    await database.update(providersTable).set({
-                        baseUrl: provider.baseUrl,
-                        type: provider.type,
-                        updatedAt: new Date().toISOString()
-                    }).where(eq(providersTable.id, provider.id));
-                }
+                console.log(`    Added provider: ${provider.name}`);
+            } catch (e) {
+                console.error(`    Failed to seed provider ${provider.name}:`, e);
             }
-        } catch (e) {
-            console.error(`  Failed to seed provider ${provider.name}:`, e);
         }
-    }
 
-    // 2. Seed Models
-    const defaultModels = [
-        // OpenAI
-        { id: 'gpt-4o', providerId: 'openai', name: 'GPT-4o', maxInputTokens: 128000, maxOutputTokens: 4096, inputPricePer1k: 0.005, outputPricePer1k: 0.015, isActive: 1 },
-        { id: 'gpt-4o-mini', providerId: 'openai', name: 'GPT-4o Mini', maxInputTokens: 128000, maxOutputTokens: 16384, inputPricePer1k: 0.00015, outputPricePer1k: 0.0006, isActive: 1 },
-        { id: 'gpt-4-turbo', providerId: 'openai', name: 'GPT-4 Turbo', maxInputTokens: 128000, maxOutputTokens: 4096, inputPricePer1k: 0.01, outputPricePer1k: 0.03, isActive: 1 },
-        
-        // Anthropic
-        { id: 'claude-3-5-sonnet-20240620', providerId: 'anthropic', name: 'Claude 3.5 Sonnet', maxInputTokens: 200000, maxOutputTokens: 8192, inputPricePer1k: 0.003, outputPricePer1k: 0.015, isActive: 1 },
-        { id: 'claude-3-opus-20240229', providerId: 'anthropic', name: 'Claude 3 Opus', maxInputTokens: 200000, maxOutputTokens: 4096, inputPricePer1k: 0.015, outputPricePer1k: 0.075, isActive: 1 },
-        { id: 'claude-3-haiku-20240307', providerId: 'anthropic', name: 'Claude 3 Haiku', maxInputTokens: 200000, maxOutputTokens: 4096, inputPricePer1k: 0.00025, outputPricePer1k: 0.00125, isActive: 1 },
-
-        // Groq
-        { id: 'llama3-70b-8192', providerId: 'groq', name: 'Llama 3 70B', maxInputTokens: 8192, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
-        { id: 'llama3-8b-8192', providerId: 'groq', name: 'Llama 3 8B', maxInputTokens: 8192, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
-        { id: 'mixtral-8x7b-32768', providerId: 'groq', name: 'Mixtral 8x7B', maxInputTokens: 32768, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
-    ];
-
-    for (const model of defaultModels) {
-        try {
-            // Ensure provider exists first to avoid FK error
-            const providerExists = await database.select().from(providersTable).where(eq(providersTable.id, model.providerId)).limit(1);
-            if (providerExists.length === 0) {
-                // Try finding by name in case ID is different but it's the same provider
-                const providerByName = await database.select().from(providersTable).where(eq(providersTable.name, model.providerId.charAt(0).toUpperCase() + model.providerId.slice(1))).limit(1);
-                if (providerByName.length > 0) {
-                    model.providerId = providerByName[0].id;
-                } else {
-                    continue; // Skip if provider truly missing
-                }
-            }
-
-            const existing = await database.select().from(modelsTable).where(
-                sql`${modelsTable.id} = ${model.id} AND ${modelsTable.providerId} = ${model.providerId}`
-            ).limit(1);
+        // 2. Seed Models (only if we seeded providers)
+        const defaultModels = [
+            // OpenAI
+            { id: 'gpt-4o', providerId: 'openai', name: 'GPT-4o', maxInputTokens: 128000, maxOutputTokens: 4096, inputPricePer1k: 0.005, outputPricePer1k: 0.015, isActive: 1 },
+            { id: 'gpt-4o-mini', providerId: 'openai', name: 'GPT-4o Mini', maxInputTokens: 128000, maxOutputTokens: 16384, inputPricePer1k: 0.00015, outputPricePer1k: 0.0006, isActive: 1 },
+            { id: 'gpt-4-turbo', providerId: 'openai', name: 'GPT-4 Turbo', maxInputTokens: 128000, maxOutputTokens: 4096, inputPricePer1k: 0.01, outputPricePer1k: 0.03, isActive: 1 },
             
-            if (existing.length === 0) {
+            // Anthropic
+            { id: 'claude-3-5-sonnet-20240620', providerId: 'anthropic', name: 'Claude 3.5 Sonnet', maxInputTokens: 200000, maxOutputTokens: 8192, inputPricePer1k: 0.003, outputPricePer1k: 0.015, isActive: 1 },
+            { id: 'claude-3-opus-20240229', providerId: 'anthropic', name: 'Claude 3 Opus', maxInputTokens: 200000, maxOutputTokens: 4096, inputPricePer1k: 0.015, outputPricePer1k: 0.075, isActive: 1 },
+            { id: 'claude-3-haiku-20240307', providerId: 'anthropic', name: 'Claude 3 Haiku', maxInputTokens: 200000, maxOutputTokens: 4096, inputPricePer1k: 0.00025, outputPricePer1k: 0.00125, isActive: 1 },
+
+            // Groq
+            { id: 'llama3-70b-8192', providerId: 'groq', name: 'Llama 3 70B', maxInputTokens: 8192, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
+            { id: 'llama3-8b-8192', providerId: 'groq', name: 'Llama 3 8B', maxInputTokens: 8192, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
+            { id: 'mixtral-8x7b-32768', providerId: 'groq', name: 'Mixtral 8x7B', maxInputTokens: 32768, maxOutputTokens: 4096, inputPricePer1k: 0, outputPricePer1k: 0, isActive: 1 },
+        ];
+
+        for (const model of defaultModels) {
+            try {
                 await database.insert(modelsTable).values({
                     ...model,
                     createdAt: new Date().toISOString(),
                     updatedAt: new Date().toISOString(),
                 });
-                console.log(`  Added model: ${model.name} (${model.providerId})`);
+                console.log(`    Added model: ${model.name} (${model.providerId})`);
+            } catch (e) {
+                console.error(`    Failed to seed model ${model.name}:`, e);
             }
-        } catch (e) {
-            console.error(`  Failed to seed model ${model.name}:`, e);
         }
+    } else if (skipSeeding) {
+        console.log("  Skipping default seeding as SKIP_SEEDING is enabled.");
+    } else {
+        console.log("  Providers already exist, skipping default seeding.");
     }
 
     // 3. Seed an initial Demo Token if none exists
     try {
         const tokens = await database.select().from(tokensTable).limit(1);
-        if (tokens.length === 0) {
+        if (!skipSeeding && tokens.length === 0) {
             const demoToken = {
                 id: 'demo-token-id',
                 name: 'Initial Demo Token',
