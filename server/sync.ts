@@ -63,8 +63,29 @@ async function mirrorUpsert(
         const tItem = targetMap.get(key);
         
         if (!tItem) {
-            await targetDb.insert(targetTable).values(sItem);
-            insertCount++;
+            try {
+                await targetDb.insert(targetTable).values(sItem);
+                insertCount++;
+            } catch (err: any) {
+                // Handle UNIQUE constraint failures during sync
+                if (err.message?.includes('UNIQUE') && tableName === 'providers') {
+                    // If ID is new but Name exists, update the existing record by Name instead
+                    try {
+                        const whereClause = eq(targetTable.name, sItem.name);
+                        await targetDb.update(targetTable).set(sItem).where(whereClause);
+                        updateCount++;
+                    } catch (e) {}
+                } else if (err.message?.includes('UNIQUE') && idFields.length === 1) {
+                    // General fallback for single ID tables
+                    try {
+                        const whereClause = eq(targetTable[idFields[0]], sItem[idFields[0]]);
+                        await targetDb.update(targetTable).set(sItem).where(whereClause);
+                        updateCount++;
+                    } catch (e) {}
+                } else {
+                    console.error(`  Sync insert failed for ${tableName}:`, err.message);
+                }
+            }
         } else {
             let changed = true;
             if (sItem.updatedAt && tItem.updatedAt) {

@@ -265,7 +265,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
         // Migration: Add columns if they don't exist
         const tablesToMigrate = [
             { name: 'providers', columns: ['createdAt', 'updatedAt', 'removeTopP', 'lastUsedKeyIndex'] },
-            { name: 'models', columns: ['createdAt', 'updatedAt'] },
+            { name: 'models', columns: ['createdAt', 'updatedAt', 'pricingModelId', 'inputPricePer1k', 'outputPricePer1k', 'isActive'] },
             { name: 'tokens', columns: ['createdAt', 'updatedAt', 'tokenType', 'creditBalance', 'maxRequestsPerDay', 'maxRequestsPerMinute', 'maxTokenUsage', 'maxCostUsage'] },
             { name: 'admin_sessions', columns: ['createdAt', 'updatedAt'] }
         ];
