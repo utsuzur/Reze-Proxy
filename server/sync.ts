@@ -258,6 +258,7 @@ export async function syncDatabases() {
 
         // 1. Determine Freshness
         const localMax = await getMaxTimestamp(db, tablePairs.map(tp => ({ table: tp.pTable, field: tp.updateField })), pSyncTable);
+        console.log(`Checking remote database freshness...`);
         const remoteMax = await getMaxTimestamp(sDb, tablePairs.map(tp => ({ table: tp.sTable, field: tp.updateField })), sSyncTable);
 
         console.log(`Freshness check: Local=${new Date(localMax).toISOString()}, Remote=${new Date(remoteMax).toISOString()}`);
@@ -317,8 +318,30 @@ export async function syncDatabases() {
                 }
             }
             
-            // 4. Ensure sync_state is updated on the target to match the source
-            // (Already handled by mirrorUpsert for the 'sync_state' table in tablePairs)
+            // 4. Ensure sync_state is updated on BOTH databases to match the latest record
+            const finalMax = Math.max(localMax, remoteMax);
+            const now = new Date(finalMax).toISOString();
+            
+            const updateState = async (dbInstance: any, table: any) => {
+                try {
+                    await dbInstance.insert(table)
+                        .values({ id: 'global', lastUpdatedAt: now })
+                        .onConflictDoUpdate({
+                            target: table.id,
+                            set: { lastUpdatedAt: now }
+                        });
+                } catch (e) {
+                    try {
+                        const result = await dbInstance.update(table).set({ lastUpdatedAt: now }).where(eq(table.id, 'global'));
+                        if (result.changes === 0) {
+                             await dbInstance.insert(table).values({ id: 'global', lastUpdatedAt: now });
+                        }
+                    } catch (e2) {}
+                }
+            };
+
+            await updateState(sourceDb, pToS ? pSyncTable : sSyncTable);
+            await updateState(targetDb, pToS ? sSyncTable : pSyncTable);
             
         } finally {
             if (isTargetSqlite) {
