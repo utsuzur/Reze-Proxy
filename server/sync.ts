@@ -1,6 +1,6 @@
 import { db, getSecondaryDb, conn, updateSyncState } from './db.ts';
 import * as schema from './schema.ts';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 
 const DB_TYPE = process.env.DB_TYPE || 'sqlite';
 
@@ -58,11 +58,13 @@ async function mirrorUpsert(
     let insertCount = 0;
     let updateCount = 0;
 
+    const itemsToInsert: any[] = [];
+
     for (const sItem of sourceData) {
         // Sanitize item: replace null/undefined numeric fields with 0
         const sanitizedItem = { ...sItem };
-        if (tableName === 'request_logs' || tableName === 'tokens' || tableName === 'models') {
-            const numericFields = ['cost', 'inputTokens', 'outputTokens', 'usageCount', 'inputPricePer1k', 'outputPricePer1k', 'creditBalance'];
+        if (tableName === 'request_logs' || tableName === 'tokens' || tableName === 'models' || tableName === 'providers') {
+            const numericFields = ['cost', 'inputTokens', 'outputTokens', 'usageCount', 'inputPricePer1k', 'outputPricePer1k', 'creditBalance', 'removeTopP', 'lastUsedKeyIndex'];
             for (const field of numericFields) {
                 if (Object.prototype.hasOwnProperty.call(sanitizedItem, field) && (sanitizedItem[field] === null || sanitizedItem[field] === undefined)) {
                     sanitizedItem[field] = 0;
@@ -74,29 +76,7 @@ async function mirrorUpsert(
         const tItem = targetMap.get(key);
         
         if (!tItem) {
-            try {
-                await targetDb.insert(targetTable).values(sanitizedItem);
-                insertCount++;
-            } catch (err: any) {
-                // Handle UNIQUE constraint failures during sync
-                if (err.message?.includes('UNIQUE') && tableName === 'providers') {
-                    // If ID is new but Name exists, update the existing record by Name instead
-                    try {
-                        const whereClause = eq(targetTable.name, sItem.name);
-                        await targetDb.update(targetTable).set(sanitizedItem).where(whereClause);
-                        updateCount++;
-                    } catch (e) {}
-                } else if (err.message?.includes('UNIQUE') && idFields.length === 1) {
-                    // General fallback for single ID tables
-                    try {
-                        const whereClause = eq(targetTable[idFields[0]], sItem[idFields[0]]);
-                        await targetDb.update(targetTable).set(sanitizedItem).where(whereClause);
-                        updateCount++;
-                    } catch (e) {}
-                } else {
-                    console.error(`  Sync insert failed for ${tableName}:`, err.message);
-                }
-            }
+            itemsToInsert.push(sanitizedItem);
         } else {
             let changed = true;
             if (sItem.updatedAt && tItem.updatedAt) {
@@ -119,6 +99,39 @@ async function mirrorUpsert(
             }
         }
     }
+
+    // Batch Insert (much faster)
+    if (itemsToInsert.length > 0) {
+        // SQLite has a limit on the number of variables in a single query (default 999 or 32766 depending on version)
+        // We chunk the inserts to be safe.
+        const CHUNK_SIZE = 50; 
+        for (let i = 0; i < itemsToInsert.length; i += CHUNK_SIZE) {
+            const chunk = itemsToInsert.slice(i, i + CHUNK_SIZE);
+            try {
+                await targetDb.insert(targetTable).values(chunk);
+                insertCount += chunk.length;
+            } catch (err: any) {
+                // Fallback to individual inserts if batch fails (e.g. unique constraint in one item)
+                for (const item of chunk) {
+                    try {
+                        await targetDb.insert(targetTable).values(item);
+                        insertCount++;
+                    } catch (singleErr: any) {
+                        if (singleErr.message?.includes('UNIQUE') && tableName === 'providers') {
+                            const whereClause = eq(targetTable.name, item.name);
+                            await targetDb.update(targetTable).set(item).where(whereClause);
+                            updateCount++;
+                        } else if (singleErr.message?.includes('UNIQUE') && idFields.length === 1) {
+                            const whereClause = eq(targetTable[idFields[0]], item[idFields[0]]);
+                            await targetDb.update(targetTable).set(item).where(whereClause);
+                            updateCount++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     return { insertCount, updateCount };
 }
 
@@ -140,20 +153,32 @@ async function mirrorDelete(
     const sourceMap = new Map(sourceData.map((item: any) => [getKeys(item), item]));
 
     let deleteCount = 0;
+    const idsToDelete: any[] = [];
 
     for (const tItem of targetData) {
         const key = getKeys(tItem);
         if (!sourceMap.has(key)) {
-            let whereClause;
             if (idFields.length === 1) {
-                whereClause = eq(targetTable[idFields[0]], tItem[idFields[0]]);
+                idsToDelete.push(tItem[idFields[0]]);
             } else {
-                whereClause = and(...idFields.map(f => eq(targetTable[f], tItem[f])));
+                // Complex PK - unfortunately we still have to delete one by one or use a complex WHERE
+                let whereClause = and(...idFields.map(f => eq(targetTable[f], tItem[f])));
+                await targetDb.delete(targetTable).where(whereClause);
+                deleteCount++;
             }
-            await targetDb.delete(targetTable).where(whereClause);
-            deleteCount++;
         }
     }
+
+    // Batch delete for simple PKs
+    if (idsToDelete.length > 0) {
+        const CHUNK_SIZE = 100;
+        for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+            const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+            await targetDb.delete(targetTable).where(inArray(targetTable[idFields[0]], chunk));
+            deleteCount += chunk.length;
+        }
+    }
+
     return { deleteCount };
 }
 
