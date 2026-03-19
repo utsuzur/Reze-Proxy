@@ -8,6 +8,8 @@ const ManageTokens: React.FC = () => {
   const [availableModels, setAvailableModels] = useState<ModelConfig[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [editingToken, setEditingToken] = useState<UserToken | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   
   // Create/Edit Form State
   const [newName, setNewName] = useState('');
@@ -25,9 +27,19 @@ const ManageTokens: React.FC = () => {
 
   useEffect(() => {
     const loadData = async () => {
-        setTokens(await storageService.getTokens());
-        const models = await storageService.getModels();
-        setAvailableModels(models.filter(m => m.isActive));
+        setIsLoading(true);
+        setError(null);
+        try {
+            const tokenList = await storageService.getTokens();
+            setTokens(tokenList);
+            const models = await storageService.getModels();
+            setAvailableModels(models.filter(m => m.isActive));
+        } catch (err: any) {
+            console.error("Failed to load tokens:", err);
+            setError(err.message || "Failed to load tokens from server.");
+        } finally {
+            setIsLoading(false);
+        }
     };
     loadData();
   }, []);
@@ -159,7 +171,7 @@ const ManageTokens: React.FC = () => {
         </div>
         <button 
           onClick={() => { resetForm(); setIsCreating(true); }}
-          disabled={isCreating}
+          disabled={isCreating || isLoading}
           className="w-full md:w-auto flex items-center justify-center gap-2 px-4 py-2 bg-reze-600 text-white rounded-lg hover:bg-reze-700 transition-colors shadow-sm disabled:opacity-50"
         >
           <Plus className="w-4 h-4" />
@@ -167,6 +179,31 @@ const ManageTokens: React.FC = () => {
         </button>
       </div>
 
+      {isLoading && (
+        <div className="flex flex-col items-center justify-center py-20 bg-white rounded-xl border border-slate-200 shadow-sm">
+            <RefreshCw className="w-10 h-10 text-reze-500 animate-spin mb-4" />
+            <p className="text-slate-500 font-medium">Loading tokens...</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-center gap-3 text-red-700">
+            <PowerOff className="w-5 h-5" />
+            <div>
+                <p className="font-bold">Error loading data</p>
+                <p className="text-sm opacity-90">{error}</p>
+            </div>
+            <button 
+                onClick={() => window.location.reload()} 
+                className="ml-auto px-3 py-1 bg-red-100 hover:bg-red-200 rounded-lg text-xs font-bold transition-colors"
+            >
+                Retry
+            </button>
+        </div>
+      )}
+
+      {!isLoading && !error && (
+        <>
       {/* Creation/Edit Modal/Panel */}
       {isCreating && (
         <div className="mb-8 bg-white p-6 rounded-xl shadow-lg border border-reze-100 animate-in fade-in slide-in-from-top-4">
@@ -660,6 +697,8 @@ const ManageTokens: React.FC = () => {
             </tbody>
         </table>
       </div>
+      </>
+      )}
     </div>
   );
 };

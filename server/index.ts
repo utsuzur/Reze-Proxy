@@ -764,7 +764,13 @@ app.get('/api/tokens', requireAdmin, async (req, res) => {
     const formatted = rows.map((r) => {
         let accessibleModelIds = [];
         try {
-            accessibleModelIds = JSON.parse(r.accessibleModelIds || '[]');
+            if (typeof r.accessibleModelIds === 'string') {
+                accessibleModelIds = JSON.parse(r.accessibleModelIds || '[]');
+            } else if (Array.isArray(r.accessibleModelIds)) {
+                accessibleModelIds = r.accessibleModelIds;
+            } else if (r.accessibleModelIds === '*') {
+                accessibleModelIds = ['*'];
+            }
         } catch (e) {
             console.error(`Error parsing accessibleModelIds for token ${r.id}:`, e);
         }
