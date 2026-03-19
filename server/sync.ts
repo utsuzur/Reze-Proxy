@@ -290,11 +290,13 @@ export async function syncDatabases() {
         }
 
         // 3. Temporarily disable foreign keys for SQLite if it's the target
-        const isTargetSqlite = pToS ? !isPrimaryPg : isPrimaryPg;
+        const isTargetSqlite = pToS ? (DB_TYPE === 'postgres') : (DB_TYPE === 'sqlite');
         const targetConn = pToS ? secondary.conn : conn;
         
         if (isTargetSqlite) {
-            try { (targetConn as any).exec('PRAGMA foreign_keys = OFF'); } catch(e) {}
+            try { (targetConn as any).exec('PRAGMA foreign_keys = OFF'); } catch(e) {
+                console.error("Failed to disable foreign keys:", e);
+            }
         }
 
         try {
