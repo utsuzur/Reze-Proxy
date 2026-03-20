@@ -781,6 +781,11 @@ app.get('/api/tokens', requireAdmin, async (req, res) => {
         return {
             ...r,
             isActive: r.isActive === 1,
+            usageCount: r.usageCount || 0,
+            inputTokens: r.inputTokens || 0,
+            outputTokens: r.outputTokens || 0,
+            totalCost: r.totalCost || 0,
+            creditBalance: r.creditBalance || 0,
             accessibleModelIds
         };
     });

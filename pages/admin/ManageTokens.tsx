@@ -504,15 +504,15 @@ const ManageTokens: React.FC = () => {
                   <div className="mb-4">
                     <div className="flex justify-between text-[10px] mb-1">
                       <span className="text-slate-500 font-medium uppercase tracking-wider">Budget Used</span>
-                      <span className="text-slate-700 font-bold">${token.totalCost.toFixed(2)} / ${token.maxCostUsage.toFixed(2)}</span>
+                      <span className="text-slate-700 font-bold">${(token.totalCost || 0).toFixed(2)} / ${token.maxCostUsage.toFixed(2)}</span>
                     </div>
                     <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/50">
                       <div 
                         className={`h-full transition-all duration-500 rounded-full ${
-                          (token.totalCost / token.maxCostUsage) > 0.9 ? 'bg-red-500' : 
-                          (token.totalCost / token.maxCostUsage) > 0.7 ? 'bg-amber-500' : 'bg-reze-500'
+                          ((token.totalCost || 0) / token.maxCostUsage) > 0.9 ? 'bg-red-500' : 
+                          ((token.totalCost || 0) / token.maxCostUsage) > 0.7 ? 'bg-amber-500' : 'bg-reze-500'
                         }`}
-                        style={{ width: `${Math.min(100, (token.totalCost / token.maxCostUsage) * 100)}%` }}
+                        style={{ width: `${Math.min(100, ((token.totalCost || 0) / token.maxCostUsage) * 100)}%` }}
                       ></div>
                     </div>
                   </div>
@@ -602,15 +602,15 @@ const ManageTokens: React.FC = () => {
                                     <div className="w-32">
                                         <div className="flex justify-between text-[9px] mb-1">
                                             <span className="text-slate-400 uppercase tracking-tighter">Budget Limit</span>
-                                            <span className="text-slate-600 font-bold">{Math.round((token.totalCost / token.maxCostUsage) * 100)}%</span>
+                                            <span className="text-slate-600 font-bold">{Math.round(((token.totalCost || 0) / token.maxCostUsage) * 100)}%</span>
                                         </div>
                                         <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
                                             <div 
                                                 className={`h-full transition-all duration-500 ${
-                                                    (token.totalCost / token.maxCostUsage) > 0.9 ? 'bg-red-500' : 
-                                                    (token.totalCost / token.maxCostUsage) > 0.7 ? 'bg-amber-500' : 'bg-reze-500'
+                                                    ((token.totalCost || 0) / token.maxCostUsage) > 0.9 ? 'bg-red-500' : 
+                                                    ((token.totalCost || 0) / token.maxCostUsage) > 0.7 ? 'bg-amber-500' : 'bg-reze-500'
                                                 }`}
-                                                style={{ width: `${Math.min(100, (token.totalCost / token.maxCostUsage) * 100)}%` }}
+                                                style={{ width: `${Math.min(100, ((token.totalCost || 0) / token.maxCostUsage) * 100)}%` }}
                                             ></div>
                                         </div>
                                     </div>
@@ -631,7 +631,7 @@ const ManageTokens: React.FC = () => {
                                 )}
                                 <div className="text-[10px] text-slate-500 flex items-center gap-1 pt-1 border-t border-slate-50 mt-1">
                                     <DollarSign className="w-3 h-3 text-green-600" />
-                                    Total Spent: <span className="font-bold text-slate-700">${token.totalCost.toFixed(3)}</span>
+                                    Total Spent: <span className="font-bold text-slate-700">${(token.totalCost || 0).toFixed(3)}</span>
                                 </div>
                                 {token.tokenType === 'credits' && (
                                     <div className="text-[10px] text-reze-600 flex items-center gap-1 pt-1 border-t border-slate-50 mt-1">
