@@ -635,6 +635,7 @@ app.post('/api/providers', requireAdmin, async (req, res) => {
       createdAt: nowIso,
       updatedAt: nowIso
     });
+    modelCache.flushAll(); 
     await updateSyncState();
     res.json({ id, name, baseUrl, apiKey, type, removeTopP });
   } catch (err: any) {
@@ -656,6 +657,7 @@ app.put('/api/providers', requireAdmin, async (req, res) => {
         .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, updatedAt: nowIso })
         .where(eq(providers.id, id));
     }
+    modelCache.flushAll(); // Clear model cache when a provider is updated
     await updateSyncState();
     res.json({ updated: 1 });
   } catch (err: any) {
@@ -725,6 +727,7 @@ app.post('/api/models', requireAdmin, async (req, res) => {
             }
         });
     }
+    modelCache.flushAll(); 
     await updateSyncState();
     res.json({ success: true, count: modelData.length });
   } catch (err: any) {
@@ -749,6 +752,7 @@ app.put('/api/models', requireAdmin, async (req, res) => {
                 updatedAt: nowIso
             })
             .where(and(eq(models.id, m.id), eq(models.providerId, m.providerId)));
+        modelCache.flushAll(); 
         await updateSyncState();
         res.json({ updated: 1 });
     } catch (err: any) {
@@ -1159,7 +1163,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
         accessibleModels = []; 
       }
       
-      if (accessibleModels.length > 0 && !accessibleModels.includes(modelRow.id)) {
+      if (accessibleModels.length > 0 && !accessibleModels.includes('*') && !accessibleModels.includes(modelRow.id)) {
          return res.status(403).json({ error: { message: "Model access denied for this token" } });
       }
 
@@ -1189,9 +1193,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       let apiKeys: string[] = [];
       try {
           const parsed = JSON.parse(modelRow.providerKey || '[]');
-          apiKeys = Array.isArray(parsed) ? parsed : [modelRow.providerKey];
+          apiKeys = (Array.isArray(parsed) ? parsed : [modelRow.providerKey]).map((k: any) => String(k).trim());
       } catch (e) {
-          apiKeys = modelRow.providerKey ? [modelRow.providerKey] : [];
+          apiKeys = modelRow.providerKey ? [modelRow.providerKey.trim()] : [];
       }
 
       if (apiKeys.length === 0) {
@@ -1278,6 +1282,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                    timestamp: new Date().toISOString()
                });
                await updateSyncState();
+
+               // Update last used index even on failure so the next request starts from the next key
+               await db.update(providers).set({ lastUsedKeyIndex: keyIndex, updatedAt: new Date().toISOString() }).where(eq(providers.id, modelRow.providerId));
 
                if (currentAttempt < apiKeys.length) continue;
 
