@@ -357,6 +357,8 @@ function convertOpenAIToAnthropic(body: any, modelId: string) {
 }
 
 function convertAnthropicToOpenAI(anthropicRes: any, modelId: string) {
+    const usage = anthropicRes.usage || {};
+    const input_tokens = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
     return {
         id: anthropicRes.id,
         object: "chat.completion",
@@ -373,9 +375,9 @@ function convertAnthropicToOpenAI(anthropicRes: any, modelId: string) {
             }
         ],
         usage: {
-            prompt_tokens: anthropicRes.usage.input_tokens,
-            completion_tokens: anthropicRes.usage.output_tokens,
-            total_tokens: anthropicRes.usage.input_tokens + anthropicRes.usage.output_tokens
+            prompt_tokens: input_tokens,
+            completion_tokens: usage.output_tokens || 0,
+            total_tokens: input_tokens + (usage.output_tokens || 0)
         }
     };
 }
@@ -962,7 +964,7 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-import { countTokens, countMessagesTokens } from './tokenService.ts';
+import { countTokens, countMessagesTokens, countContentTokens } from './tokenService.ts';
 
 // --- OpenAI Compatible Proxy ---
 
@@ -1087,12 +1089,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     }).where(eq(tokens.id, row.id));
     await updateSyncState();
 
-    let body = req.body;
-    if (inputFormat === 'anthropic') {
-        body = convertAnthropicToOpenAIRequest(body);
-    }
-
-    const modelId = body.model;
+    const modelId = req.body.model;
     if (!modelId) return res.status(400).json({ error: { message: "Model is required" } });
 
     // 2. Get Model (Cache -> DB)
@@ -1172,9 +1169,26 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
          return res.status(403).json({ error: { message: "Model access denied for this token" } });
       }
 
+      const isAnthropicInput = inputFormat === 'anthropic';
+      const isAnthropicProvider = modelRow.providerType === 'anthropic';
+      const skipRequestConversion = isAnthropicInput && isAnthropicProvider;
+
+      let body = req.body;
+      if (isAnthropicInput && !isAnthropicProvider) {
+          body = convertAnthropicToOpenAIRequest(req.body);
+      }
+
       // Check Input Token Limit
-      const messages = body.messages || [];
-      const currentInputTokens = countMessagesTokens(messages, modelId, modelRow.providerType);
+      let currentInputTokens = 0;
+      if (skipRequestConversion) {
+          currentInputTokens = countMessagesTokens(req.body.messages || [], modelId, modelRow.providerType);
+          if (req.body.system) {
+              currentInputTokens += countContentTokens(req.body.system, modelId, modelRow.providerType);
+          }
+      } else {
+          const messages = body.messages || [];
+          currentInputTokens = countMessagesTokens(messages, modelId, modelRow.providerType);
+      }
 
       if (row.maxTokenUsage && row.maxTokenUsage > 0) {
         if (((row.inputTokens || 0) + (row.outputTokens || 0) + currentInputTokens) > row.maxTokenUsage) {
@@ -1239,32 +1253,44 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             if (isAnthropic) {
                 headers['x-api-key'] = currentKey;
                 headers['anthropic-version'] = '2023-06-01';
+                headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
             } else {
                 headers['Authorization'] = `Bearer ${currentKey}`;
             }
 
             const isStreaming = body.stream === true;
 
-            // Enforce max output tokens
-            let finalMaxTokens = body.max_tokens;
-            if (modelRow.maxOutputTokens) {
-              if (!finalMaxTokens || finalMaxTokens > modelRow.maxOutputTokens) {
-                finalMaxTokens = modelRow.maxOutputTokens;
-              }
-            }
-            
-            let requestBody = { ...body, model: modelRow.id };
+            let requestBody;
+            if (skipRequestConversion) {
+                requestBody = { ...req.body, model: modelRow.id };
+                // Enforce max output tokens
+                if (modelRow.maxOutputTokens) {
+                    if (!requestBody.max_tokens || requestBody.max_tokens > modelRow.maxOutputTokens) {
+                        requestBody.max_tokens = modelRow.maxOutputTokens;
+                    }
+                }
+            } else {
+                // Enforce max output tokens
+                let finalMaxTokens = body.max_tokens;
+                if (modelRow.maxOutputTokens) {
+                    if (!finalMaxTokens || finalMaxTokens > modelRow.maxOutputTokens) {
+                        finalMaxTokens = modelRow.maxOutputTokens;
+                    }
+                }
+                
+                requestBody = { ...body, model: modelRow.id };
 
-            if (finalMaxTokens) {
-              requestBody.max_tokens = finalMaxTokens;
-            }
+                if (finalMaxTokens) {
+                    requestBody.max_tokens = finalMaxTokens;
+                }
 
-            if (modelRow.removeTopP) {
-                delete requestBody.top_p;
-            }
+                if (modelRow.removeTopP) {
+                    delete requestBody.top_p;
+                }
 
-            if (isAnthropic) {
-                requestBody = convertOpenAIToAnthropic(requestBody, modelRow.id);
+                if (isAnthropic) {
+                    requestBody = convertOpenAIToAnthropic(requestBody, modelRow.id);
+                }
             }
 
             // Proxy Request
@@ -1342,7 +1368,10 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                             const anthropicEvent = JSON.parse(dataStr);
                                             
                                             if (anthropicEvent.type === 'message_start') {
-                                                streamUsage.prompt_tokens = anthropicEvent.message?.usage?.input_tokens;
+                                                const usage = anthropicEvent.message?.usage;
+                                                if (usage) {
+                                                    streamUsage.prompt_tokens = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+                                                }
                                             } else if (anthropicEvent.type === 'message_delta') {
                                                 if (anthropicEvent.usage?.output_tokens) {
                                                     streamUsage.completion_tokens = anthropicEvent.usage.output_tokens;
@@ -1493,9 +1522,14 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 return res.status(502).json({ error: { message: "Invalid JSON response from provider" } });
             }
             
-            const inputTokens = data.usage?.prompt_tokens || currentInputTokens;
+            const usage = data.usage || {};
+            let inputTokens = usage.prompt_tokens || currentInputTokens;
+            if (isAnthropic && inputFormat === 'anthropic') {
+                inputTokens = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) || currentInputTokens;
+            }
+
             const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
-            const outputTokens = data.usage?.completion_tokens || countTokens(outputContent, modelId, modelRow.providerType);
+            const outputTokens = usage.completion_tokens || usage.output_tokens || countTokens(outputContent, modelId, modelRow.providerType);
             const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
 
             const updateValues: any = {

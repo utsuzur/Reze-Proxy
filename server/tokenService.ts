@@ -30,7 +30,7 @@ function getTokenizer(modelName: string, providerType?: string): Tiktoken {
 }
 
 export function countTokens(text: string, modelName: string = 'gpt-3.5-turbo', providerType?: string): number {
-  if (!text) return 0;
+  if (!text || typeof text !== 'string') return 0;
   
   const enc = getTokenizer(modelName, providerType);
 
@@ -47,6 +47,27 @@ export function countTokens(text: string, modelName: string = 'gpt-3.5-turbo', p
     // In this WASM version, it's safer to free if we don't cache.
     enc.free();
   }
+}
+
+/**
+ * Counts tokens in a content block (string or Anthropic-style array of content blocks)
+ */
+export function countContentTokens(content: any, modelName: string = 'gpt-3.5-turbo', providerType?: string): number {
+    if (!content) return 0;
+    if (typeof content === 'string') {
+        return countTokens(content, modelName, providerType);
+    }
+    if (Array.isArray(content)) {
+        let total = 0;
+        for (const part of content) {
+            if (part.type === 'text' && typeof part.text === 'string') {
+                total += countTokens(part.text, modelName, providerType);
+            }
+            // Anthropic multimodal / tool use can be expanded here if needed
+        }
+        return total;
+    }
+    return 0;
 }
 
 /**
@@ -73,17 +94,8 @@ export function countMessagesTokens(messages: any[], modelName: string = 'gpt-3.
         // Count role
         numTokens += countTokens(message.role || '', modelName, providerType);
         
-        // Count content (handle both string and multimodal array formats)
-        const content = message.content;
-        if (typeof content === 'string') {
-            numTokens += countTokens(content, modelName, providerType);
-        } else if (Array.isArray(content)) {
-            for (const part of content) {
-                if (part.type === 'text' && typeof part.text === 'string') {
-                    numTokens += countTokens(part.text, modelName, providerType);
-                }
-            }
-        }
+        // Count content
+        numTokens += countContentTokens(message.content, modelName, providerType);
         
         // Count name if present
         if (message.name) {
