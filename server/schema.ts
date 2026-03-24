@@ -57,6 +57,7 @@ export const pgTokens = pgTable('tokens', {
   requestsThisMinute: integer('requeststhisminute').default(0),
   lastRequestMinute: text('lastrequestminute'),
   tokenType: text('tokentype').default('rpd'),
+  tier: text('tier').default('standard'),
   creditBalance: real('creditbalance').default(0),
   updatedAt: timestamp('updatedAt', { mode: 'string' }).defaultNow(),
 }, (table) => ({
@@ -69,7 +70,10 @@ export const pgRequestLogs = pgTable('request_logs', {
   modelId: text('modelid').notNull(),
   inputTokens: integer('inputtokens').default(0),
   outputTokens: integer('outputtokens').default(0),
+  cacheReadTokens: integer('cachereadtokens').default(0),
+  cacheWriteTokens: integer('cachewritetokens').default(0),
   cost: real('cost').default(0),
+  originalCost: real('originalcost').default(0),
   timestamp: timestamp('timestamp', { mode: 'string' }).defaultNow(),
 }, (table) => ({
   tokenIdx: index('idx_request_logs_tokenId').on(table.tokenId),
@@ -172,6 +176,7 @@ export const sqliteTokens = sqliteTable('tokens', {
   requestsThisMinute: sqliteInteger('requestsThisMinute').default(0),
   lastRequestMinute: sqliteText('lastRequestMinute'),
   tokenType: sqliteText('tokenType').default('rpd'),
+  tier: sqliteText('tier').default('standard'),
   creditBalance: sqliteReal('creditBalance').default(0),
   updatedAt: sqliteText('updatedAt'),
 });
@@ -182,7 +187,10 @@ export const sqliteRequestLogs = sqliteTable('request_logs', {
   modelId: sqliteText('modelId').notNull(),
   inputTokens: sqliteInteger('inputTokens').default(0),
   outputTokens: sqliteInteger('outputTokens').default(0),
+  cacheReadTokens: sqliteInteger('cacheReadTokens').default(0),
+  cacheWriteTokens: sqliteInteger('cacheWriteTokens').default(0),
   cost: sqliteReal('cost').default(0),
+  originalCost: sqliteReal('originalCost').default(0),
   timestamp: sqliteText('timestamp'),
 });
 

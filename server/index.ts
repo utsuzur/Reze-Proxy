@@ -798,7 +798,7 @@ app.get('/api/tokens', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/tokens', requireAdmin, async (req, res) => {
-  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, creditBalance } = req.body;
+  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
   try {
     await db.insert(tokens).values({
@@ -815,6 +815,7 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
       maxTokenUsage,
       maxCostUsage,
       tokenType: tokenType || 'rpd',
+      tier: tier || 'standard',
       creditBalance: creditBalance || 0,
       updatedAt: nowIso
     });
@@ -826,7 +827,7 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
 });
 
 app.put('/api/tokens', requireAdmin, async (req, res) => {
-  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, creditBalance } = req.body;
+  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
   
   try {
@@ -840,6 +841,7 @@ app.put('/api/tokens', requireAdmin, async (req, res) => {
       maxTokenUsage,
       maxCostUsage,
       tokenType,
+      tier,
       creditBalance,
       updatedAt: nowIso
     };
@@ -1263,6 +1265,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             let requestBody;
             if (skipRequestConversion) {
                 requestBody = { ...req.body, model: modelRow.id };
+                delete requestBody.extended_ttl;
                 // Enforce max output tokens
                 if (modelRow.maxOutputTokens) {
                     if (!requestBody.max_tokens || requestBody.max_tokens > modelRow.maxOutputTokens) {
@@ -1279,6 +1282,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 }
                 
                 requestBody = { ...body, model: modelRow.id };
+                delete requestBody.extended_ttl;
 
                 if (finalMaxTokens) {
                     requestBody.max_tokens = finalMaxTokens;
@@ -1343,7 +1347,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                     const reader = proxyRes.body.getReader();
                     const decoder = new TextDecoder();
                     let accumulatedOutput = "";
-                    let streamUsage: { prompt_tokens?: number, completion_tokens?: number } = {};
+                    let streamUsage: { prompt_tokens?: number, completion_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number } = {};
                     let lineBuffer = "";
 
                     try {
@@ -1370,7 +1374,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                             if (anthropicEvent.type === 'message_start') {
                                                 const usage = anthropicEvent.message?.usage;
                                                 if (usage) {
-                                                    streamUsage.prompt_tokens = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+                                                    streamUsage.prompt_tokens = usage.input_tokens || 0;
+                                                    streamUsage.cache_read_input_tokens = usage.cache_read_input_tokens || 0;
+                                                    streamUsage.cache_creation_input_tokens = usage.cache_creation_input_tokens || 0;
                                                 }
                                             } else if (anthropicEvent.type === 'message_delta') {
                                                 if (anthropicEvent.usage?.output_tokens) {
@@ -1472,13 +1478,33 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                         res.end();
                         
                         try {
-                            const inputTokens = streamUsage.prompt_tokens || currentInputTokens;
+                            const inputTokensBase = streamUsage.prompt_tokens || currentInputTokens;
+                            const cacheRead = streamUsage.cache_read_input_tokens || 0;
+                            const cacheWrite = streamUsage.cache_creation_input_tokens || 0;
                             const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId, modelRow.providerType);
-                            const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
+                            
+                            const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
+                            
+                            const inputPrice = modelRow.inputPricePer1k || 0;
+                            const outputPrice = modelRow.outputPricePer1k || 0;
+                            
+                            // Calculate Adjusted Cost
+                            const tier = row.tier || 'standard';
+                            const isExtendedTtl = req.body.extended_ttl === true || req.headers['x-extended-ttl'] === 'true';
+                            
+                            const normalInputCost = (inputTokensBase * inputPrice) / 1000;
+                            const cacheReadCost = (cacheRead * (tier === 'plus' ? 0.8 : 1.0) * inputPrice) / 1000;
+                            const cacheWriteCost = (cacheWrite * (isExtendedTtl ? 2.0 : 1.25) * inputPrice) / 1000;
+                            const outputCost = (outputTokens * outputPrice) / 1000;
+                            
+                            const cost = normalInputCost + cacheReadCost + cacheWriteCost + outputCost;
+                            
+                            // Calculate Original Cost (Full uncached price)
+                            const originalCost = (totalInputTokens * inputPrice / 1000) + outputCost;
 
                             const updateValues: any = {
                                 usageCount: (row.usageCount || 0) + 1,
-                                inputTokens: (row.inputTokens || 0) + inputTokens,
+                                inputTokens: (row.inputTokens || 0) + totalInputTokens,
                                 outputTokens: (row.outputTokens || 0) + outputTokens,
                                 totalCost: (row.totalCost || 0) + cost,
                                 updatedAt: new Date().toISOString()
@@ -1493,9 +1519,12 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                             await db.insert(requestLogs).values({
                                 tokenId: row.id,
                                 modelId,
-                                inputTokens,
+                                inputTokens: totalInputTokens,
                                 outputTokens,
+                                cacheReadTokens: cacheRead,
+                                cacheWriteTokens: cacheWrite,
                                 cost,
+                                originalCost,
                                 timestamp: new Date().toISOString()
                             });
                             await updateSyncState();
@@ -1523,18 +1552,40 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             }
             
             const usage = data.usage || {};
-            let inputTokens = usage.prompt_tokens || currentInputTokens;
+            let inputTokensBase = usage.prompt_tokens || currentInputTokens;
+            let cacheRead = usage.cache_read_input_tokens || 0;
+            let cacheWrite = usage.cache_creation_input_tokens || 0;
+
             if (isAnthropic && inputFormat === 'anthropic') {
-                inputTokens = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) || currentInputTokens;
+                inputTokensBase = usage.input_tokens || 0;
+                cacheRead = usage.cache_read_input_tokens || 0;
+                cacheWrite = usage.cache_creation_input_tokens || 0;
             }
 
+            const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
             const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
             const outputTokens = usage.completion_tokens || usage.output_tokens || countTokens(outputContent, modelId, modelRow.providerType);
-            const cost = ((inputTokens * (modelRow.inputPricePer1k || 0)) / 1000) + ((outputTokens * (modelRow.outputPricePer1k || 0)) / 1000);
+            
+            const inputPrice = modelRow.inputPricePer1k || 0;
+            const outputPrice = modelRow.outputPricePer1k || 0;
+            
+            // Calculate Adjusted Cost
+            const tier = row.tier || 'standard';
+            const isExtendedTtl = req.body.extended_ttl === true || req.headers['x-extended-ttl'] === 'true';
+            
+            const normalInputCost = (inputTokensBase * inputPrice) / 1000;
+            const cacheReadCost = (cacheRead * (tier === 'plus' ? 0.8 : 1.0) * inputPrice) / 1000;
+            const cacheWriteCost = (cacheWrite * (isExtendedTtl ? 2.0 : 1.25) * inputPrice) / 1000;
+            const outputCost = (outputTokens * outputPrice) / 1000;
+            
+            const cost = normalInputCost + cacheReadCost + cacheWriteCost + outputCost;
+            
+            // Calculate Original Cost (Full uncached price)
+            const originalCost = (totalInputTokens * inputPrice / 1000) + outputCost;
 
             const updateValues: any = {
                 usageCount: (row.usageCount || 0) + 1,
-                inputTokens: (row.inputTokens || 0) + inputTokens,
+                inputTokens: (row.inputTokens || 0) + totalInputTokens,
                 outputTokens: (row.outputTokens || 0) + outputTokens,
                 totalCost: (row.totalCost || 0) + cost,
                 updatedAt: new Date().toISOString()
@@ -1549,9 +1600,12 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             await db.insert(requestLogs).values({
                 tokenId: row.id,
                 modelId,
-                inputTokens,
+                inputTokens: totalInputTokens,
                 outputTokens,
+                cacheReadTokens: cacheRead,
+                cacheWriteTokens: cacheWrite,
                 cost,
+                originalCost,
                 timestamp: new Date().toISOString()
             });
             await updateSyncState();

@@ -112,6 +112,7 @@ async function seedData(database: any, type: string) {
                 updatedAt: new Date().toISOString(),
                 isActive: 1,
                 tokenType: 'rpd',
+                tier: 'plus', // Give the demo token 'plus' tier by default for testing
                 creditBalance: 10.0, // Give some initial credits
                 maxRequestsPerDay: 100,
                 accessibleModelIds: '*', // All models
@@ -187,6 +188,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 requestsThisMinute INTEGER DEFAULT 0,
                 lastRequestMinute TEXT,
                 tokenType TEXT DEFAULT 'rpd',
+                tier TEXT DEFAULT 'standard',
                 creditBalance REAL DEFAULT 0,
                 updatedAt TEXT
             );
@@ -197,7 +199,10 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 modelId TEXT NOT NULL,
                 inputTokens INTEGER DEFAULT 0,
                 outputTokens INTEGER DEFAULT 0,
+                cacheReadTokens INTEGER DEFAULT 0,
+                cacheWriteTokens INTEGER DEFAULT 0,
                 cost REAL DEFAULT 0,
+                originalCost REAL DEFAULT 0,
                 timestamp TEXT NOT NULL,
                 FOREIGN KEY(tokenId) REFERENCES tokens(id) ON DELETE CASCADE
             );
@@ -241,13 +246,13 @@ async function initializeTableSchema(database: any, connection: any, type: strin
             { name: 'providers', columns: ['createdAt', 'updatedAt', 'removeTopP', 'lastUsedKeyIndex'] },
             { name: 'models', columns: ['createdAt', 'updatedAt', 'pricingModelId', 'inputPricePer1k', 'outputPricePer1k', 'isActive'] },
             { name: 'tokens', columns: [
-                'createdAt', 'updatedAt', 'tokenType', 'creditBalance', 
+                'createdAt', 'updatedAt', 'tokenType', 'tier', 'creditBalance', 
                 'maxRequestsPerDay', 'maxRequestsPerMinute', 'maxTokenUsage', 'maxCostUsage',
                 'usageCount', 'inputTokens', 'outputTokens', 'totalCost', 'accessibleModelIds',
                 'requestsToday', 'lastRequestDate', 'requestsThisMinute', 'lastRequestMinute'
             ] },
             { name: 'admin_sessions', columns: ['createdAt', 'updatedAt'] },
-            { name: 'request_logs', columns: ['tokenId', 'modelId', 'inputTokens', 'outputTokens', 'cost', 'timestamp'] },
+            { name: 'request_logs', columns: ['tokenId', 'modelId', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'cost', 'originalCost', 'timestamp'] },
             { name: 'error_logs', columns: ['tokenId', 'modelId', 'providerId', 'errorType', 'errorMessage', 'timestamp'] },
             { name: 'admin_audit_log', columns: ['timestamp', 'event', 'ip', 'userAgent', 'details'] }
         ];
@@ -265,6 +270,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                             
                             let colDef = `${column} ${type}`;
                             if (column === 'tokenType') colDef = "tokenType TEXT DEFAULT 'rpd'";
+                            if (column === 'tier') colDef = "tier TEXT DEFAULT 'standard'";
                             if (column === 'creditBalance') colDef = "creditBalance REAL DEFAULT 0";
                             if (column === 'removeTopP') colDef = "removeTopP INTEGER DEFAULT 0";
                             if (column === 'lastUsedKeyIndex') colDef = "lastUsedKeyIndex INTEGER DEFAULT 0";
@@ -360,6 +366,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                         requeststhisminute INTEGER DEFAULT 0,
                         lastrequestminute TEXT,
                         tokentype TEXT DEFAULT 'rpd',
+                        tier TEXT DEFAULT 'standard',
                         creditbalance REAL DEFAULT 0,
                         "updatedAt" TIMESTAMP DEFAULT NOW()
                     )
@@ -373,7 +380,10 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                         modelid TEXT NOT NULL,
                         inputtokens INTEGER DEFAULT 0,
                         outputtokens INTEGER DEFAULT 0,
+                        cachereadtokens INTEGER DEFAULT 0,
+                        cachewritetokens INTEGER DEFAULT 0,
                         cost REAL DEFAULT 0,
+                        originalcost REAL DEFAULT 0,
                         timestamp TIMESTAMP DEFAULT NOW()
                     )
                 `);
@@ -424,10 +434,15 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 console.log('PostgreSQL schema already exists. Checking for missing columns...');
                 
                 // Migration for existing Postgres tables
-                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tokentype TEXT DEFAULT 'rpd'`); } catch(e) {}
-                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS creditbalance REAL DEFAULT 0`); } catch(e) {}
-                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
-                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tokentype TEXT DEFAULT 'rpd'`); } catch(e) { console.error("Migration failed for tokentype:", e); }
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'standard'`); } catch(e) { console.error("Migration failed for tier:", e); }
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS creditbalance REAL DEFAULT 0`); } catch(e) { console.error("Migration failed for creditbalance:", e); }
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) { console.error("Migration failed for createdAt:", e); }
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) { console.error("Migration failed for updatedAt:", e); }
+                
+                try { await (database as any).execute(sql`ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS cachereadtokens INTEGER DEFAULT 0`); } catch(e) { console.error("Migration failed for cachereadtokens:", e); }
+                try { await (database as any).execute(sql`ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS cachewritetokens INTEGER DEFAULT 0`); } catch(e) { console.error("Migration failed for cachewritetokens:", e); }
+                try { await (database as any).execute(sql`ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS originalcost REAL DEFAULT 0`); } catch(e) { console.error("Migration failed for originalcost:", e); }
                 
                 try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
                 try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}

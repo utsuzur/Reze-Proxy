@@ -37,6 +37,7 @@ export interface UserToken {
   maxCostUsage?: number; // Budget in USD
   isActive: boolean;
   tokenType?: 'rpd' | 'credits';
+  tier?: 'standard' | 'plus';
   creditBalance?: number;
 }
 
@@ -50,7 +51,10 @@ export interface RequestLog {
   modelId: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   cost: number;
+  originalCost: number;
   timestamp: string;
 }
 

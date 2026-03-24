@@ -19,6 +19,7 @@ const ManageTokens: React.FC = () => {
   const [maxTokenUsage, setMaxTokenUsage] = useState<number | ''>('');
   const [maxCostUsage, setMaxCostUsage] = useState<number | ''>('');
   const [tokenType, setTokenType] = useState<'rpd' | 'credits'>('rpd');
+  const [tier, setTier] = useState<'standard' | 'plus'>('standard');
   const [creditBalance, setCreditBalance] = useState<number | ''>('');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
@@ -70,6 +71,7 @@ const ManageTokens: React.FC = () => {
         maxTokenUsage: maxTokenUsage !== '' ? Number(maxTokenUsage) : undefined,
         maxCostUsage: maxCostUsage !== '' ? Number(maxCostUsage) : undefined,
         tokenType: tokenType,
+        tier: tier,
         creditBalance: creditBalance !== '' ? Number(creditBalance) : 0
       });
       setTokens(await storageService.getTokens());
@@ -94,6 +96,7 @@ const ManageTokens: React.FC = () => {
           maxTokenUsage: maxTokenUsage !== '' ? Number(maxTokenUsage) : undefined,
           maxCostUsage: maxCostUsage !== '' ? Number(maxCostUsage) : undefined,
           tokenType: tokenType,
+          tier: tier,
           creditBalance: creditBalance !== '' ? Number(creditBalance) : 0
       };
 
@@ -112,6 +115,7 @@ const ManageTokens: React.FC = () => {
     setMaxTokenUsage(token.maxTokenUsage || '');
     setMaxCostUsage(token.maxCostUsage || '');
     setTokenType(token.tokenType || 'rpd');
+    setTier(token.tier || 'standard');
     setCreditBalance(token.creditBalance !== undefined ? token.creditBalance : '');
     setSelectedModels(token.accessibleModelIds);
     setIsActive(token.isActive);
@@ -132,6 +136,7 @@ const ManageTokens: React.FC = () => {
     setMaxTokenUsage('');
     setMaxCostUsage('');
     setTokenType('rpd');
+    setTier('standard');
     setCreditBalance('');
     setSelectedModels([]);
     setIsActive(true);
@@ -308,6 +313,27 @@ const ManageTokens: React.FC = () => {
                             </button>
                         </div>
                     </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">Pricing Tier</label>
+                        <div className="flex gap-2">
+                            <button 
+                                onClick={() => setTier('standard')}
+                                className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-all ${tier === 'standard' ? 'bg-reze-600 border-reze-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-600 hover:border-reze-300'}`}
+                            >
+                                Standard
+                            </button>
+                            <button 
+                                onClick={() => setTier('plus')}
+                                className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-all ${tier === 'plus' ? 'bg-reze-600 border-reze-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-600 hover:border-reze-300'}`}
+                            >
+                                Plus
+                            </button>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">Plus tier gets 80% pricing for cache reads.</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {tokenType === 'credits' && (
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">Credit Balance (USD)</label>

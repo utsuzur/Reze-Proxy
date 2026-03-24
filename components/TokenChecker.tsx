@@ -12,7 +12,10 @@ interface Log {
   modelId: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   cost: number;
+  originalCost: number;
   timestamp: string;
 }
 
@@ -30,6 +33,7 @@ interface TokenData {
   maxCostUsage: number | null;
   remainingRequestsToday: number | null;
   tokenType?: 'rpd' | 'credits';
+  tier?: 'standard' | 'plus';
   creditBalance?: number;
   isActive: boolean;
   logs: Log[];
@@ -321,23 +325,42 @@ export const TokenChecker: React.FC<TokenCheckerProps> = ({ isOpen, onClose }) =
                                 <th className="px-4 py-3">Model</th>
                                 <th className="px-4 py-3 text-right">Input</th>
                                 <th className="px-4 py-3 text-right">Output</th>
-                                <th className="px-4 py-3 text-right">Cost</th>
-                                <th className="px-4 py-3 text-right">Total</th>
+                                <th className="px-4 py-3 text-right">Cost (Orig → Adj)</th>
+                                <th className="px-4 py-3 text-right">Total Tokens</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                             {data.logs.map((log) => (
                                 <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
                                     <td className="px-4 py-3 text-slate-600">
-                                        {new Date(log.timestamp).toLocaleString()}
+                                        {new Date(log.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                                     </td>
-                                    <td className="px-4 py-3 font-mono text-reze-600 bg-reze-50/50 rounded inline-block my-1 ml-4 text-xs px-2 py-0.5">
+                                    <td className="px-4 py-3 font-mono text-reze-600 bg-reze-50/50 rounded inline-block my-1 ml-4 text-[10px] px-2 py-0.5">
                                         {log.modelId}
                                     </td>
-                                    <td className="px-4 py-3 text-right text-slate-600">{log.inputTokens}</td>
+                                    <td className="px-4 py-3 text-right text-slate-600">
+                                        <div>{log.inputTokens}</div>
+                                        {log.cacheReadTokens > 0 && (
+                                            <div className="text-[10px] text-blue-500 font-bold">
+                                                Cache read
+                                            </div>
+                                        )}
+                                        {log.cacheWriteTokens > 0 && (
+                                            <div className="text-[10px] text-reze-500 font-bold">
+                                                Cache write
+                                            </div>
+                                        )}
+                                    </td>
                                     <td className="px-4 py-3 text-right text-slate-600">{log.outputTokens}</td>
-                                    <td className="px-4 py-3 text-right text-green-600 font-medium">
-                                        ${log.cost?.toFixed(4)}
+                                    <td className="px-4 py-3 text-right font-medium">
+                                        <div className="flex flex-col items-end">
+                                            <div className="text-green-600 font-bold">${log.cost?.toFixed(4)}</div>
+                                            {log.originalCost > 0 && Math.abs(log.cost - log.originalCost) > 0.00001 && (
+                                                <div className="text-[10px] text-slate-400 line-through">
+                                                    ${log.originalCost.toFixed(4)}
+                                                </div>
+                                            )}
+                                        </div>
                                     </td>
                                     <td className="px-4 py-3 text-right font-medium text-slate-800">
                                         {log.inputTokens + log.outputTokens}
