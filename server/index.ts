@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import cors from 'cors';
 import path from 'path';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
@@ -40,6 +41,31 @@ const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(cors());
+
+// Convert GET to POST for /v1/chat/completions and /v1/messages
+app.use(['/v1/chat/completions', '/v1/messages'], (req, res, next) => {
+  if (req.method === 'GET') {
+    req.method = 'POST';
+    // If it's a GET, move query parameters to body for handleChatRequest to use
+    req.body = { ...req.body, ...req.query };
+
+    // Handle auth in query if missing in headers
+    const queryKey = req.query.key || req.query.apiKey;
+    if (!req.headers.authorization && typeof queryKey === 'string') {
+        req.headers.authorization = `Bearer ${queryKey}`;
+    }
+    
+    // Some libraries might send JSON as a single query param 'json'
+    if (req.query.json && typeof req.query.json === 'string') {
+        try {
+            const parsed = JSON.parse(req.query.json);
+            req.body = { ...req.body, ...parsed };
+        } catch (e) {}
+    }
+  }
+  next();
+});
 
 // Request Logger
 app.use((req, res, next) => {
