@@ -1027,12 +1027,40 @@ const modelCache = new NodeCache({ stdTTL: 300 }); // Cache model configs for 5 
 
 // --- OpenAI Compatible Proxy ---
 
+function sendError(res: express.Response, status: number, message: string, type: string = 'invalid_request_error', inputFormat: 'openai' | 'anthropic' = 'openai') {
+  if (inputFormat === 'anthropic') {
+    let anthropicType = 'api_error';
+    if (status === 401) anthropicType = 'authentication_error';
+    else if (status === 403) anthropicType = 'permission_error';
+    else if (status === 404) anthropicType = 'not_found_error';
+    else if (status === 429) anthropicType = 'rate_limit_error';
+    else if (status === 400) anthropicType = 'invalid_request_error';
+
+    return res.status(status).json({
+      type: "error",
+      error: {
+        type: anthropicType,
+        message: message
+      }
+    });
+  } else {
+    return res.status(status).json({
+      error: {
+        message: message,
+        type: type,
+        param: null,
+        code: null
+      }
+    });
+  }
+}
+
 async function handleChatRequest(req: express.Request, res: express.Response, inputFormat: 'openai' | 'anthropic' = 'openai') {
   const authHeader = req.headers.authorization || (inputFormat === 'anthropic' ? req.headers['x-api-key'] : undefined);
   if (!authHeader || (typeof authHeader === 'string' && !authHeader.startsWith('Bearer ') && inputFormat === 'openai')) {
-    return res.status(401).json({ error: { message: "Missing or invalid Authorization header", type: "invalid_request_error" } });
+    return sendError(res, 401, "Missing or invalid Authorization header", "invalid_request_error", inputFormat);
   }
-  
+
   let tokenStr = "";
   if (typeof authHeader === 'string') {
       tokenStr = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
@@ -1046,17 +1074,17 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
           row = results[0];
           if (row) tokenCache.set(tokenStr, row);
       }
-      
-      if (!row) return res.status(401).json({ error: { message: "Invalid API key" } });
-  
+
+      if (!row) return sendError(res, 401, "Invalid API key", "invalid_request_error", inputFormat);
+
       // Check if Token is Active
       if (row.isActive === 0) {
-        return res.status(401).json({ error: { message: "API key disabled" } });
+        return sendError(res, 401, "API key disabled", "invalid_request_error", inputFormat);
       }
 
     // Check Expiry
     if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
-      return res.status(401).json({ error: { message: "API key expired" } });
+      return sendError(res, 401, "API key expired", "invalid_request_error", inputFormat);
     }
 
     // Rate Limiting
@@ -1067,38 +1095,37 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     // Token Usage Limit
     if (row.maxTokenUsage && row.maxTokenUsage > 0) {
         if (((row.inputTokens || 0) + (row.outputTokens || 0)) >= row.maxTokenUsage) {
-            return res.status(403).json({ error: { message: "Overall token usage limit reached." } });
+            return sendError(res, 403, "Overall token usage limit reached.", "invalid_request_error", inputFormat);
         }
     }
 
     // Budget Limit
     if (row.maxCostUsage && row.maxCostUsage > 0) {
         if ((row.totalCost || 0) >= row.maxCostUsage) {
-            return res.status(403).json({ error: { message: "Budget limit reached. Please contact admin to increase balance." } });
+            return sendError(res, 403, "Budget limit reached. Please contact admin to increase balance.", "invalid_request_error", inputFormat);
         }
     }
 
     // Credit System check
     if (row.tokenType === 'credits') {
         if ((row.creditBalance || 0) <= 0) {
-            return res.status(403).json({ error: { message: "Insufficient credits. Please contact admin to top up." } });
+            return sendError(res, 403, "Insufficient credits. Please contact admin to top up.", "invalid_request_error", inputFormat);
         }
     }
 
     // Daily Limit
     if (row.maxRequestsPerDay && row.maxRequestsPerDay > 0) {
         if (row.lastRequestDate === todayStr && (row.requestsToday || 0) >= row.maxRequestsPerDay) {
-             return res.status(429).json({ error: { message: "Daily request limit reached. Resets at 00:00 UTC." } });
+             return sendError(res, 429, "Daily request limit reached. Resets at 00:00 UTC.", "invalid_request_error", inputFormat);
         }
     }
 
     // Minute Limit
     if (row.maxRequestsPerMinute && row.maxRequestsPerMinute > 0) {
          if (row.lastRequestMinute === currentMinuteStr && (row.requestsThisMinute || 0) >= row.maxRequestsPerMinute) {
-             return res.status(429).json({ error: { message: "Rate limit exceeded. Please wait a minute." } });
+             return sendError(res, 429, "Rate limit exceeded. Please wait a minute.", "invalid_request_error", inputFormat);
          }
-    }
-    
+    }    
     // Increment in-memory to reflect immediate change (optimistic)
     if (row.lastRequestDate !== todayStr) { row.requestsToday = 1; row.lastRequestDate = todayStr; }
     else { row.requestsToday = (row.requestsToday || 0) + 1; }
@@ -1118,7 +1145,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     await updateSyncState();
 
     const modelId = req.body.model;
-    if (!modelId) return res.status(400).json({ error: { message: "Model is required" } });
+    if (!modelId) return sendError(res, 400, "Model is required", "invalid_request_error", inputFormat);
 
     // 2. Get Model (Cache -> DB)
     let modelRow: any = modelCache.get(modelId);
@@ -1182,7 +1209,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
         if (modelRow) modelCache.set(modelId, modelRow);
     }
 
-      if (!modelRow) return res.status(404).json({ error: { message: "Unknown Model Name" } });
+      if (!modelRow) return sendError(res, 404, "Unknown Model Name", "invalid_request_error", inputFormat);
 
       // Check Access using the Internal ID (modelRow.id)
       let accessibleModels: string[] = [];
@@ -1194,7 +1221,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       }
       
       if (accessibleModels.length > 0 && !accessibleModels.includes('*') && !accessibleModels.includes(modelRow.id)) {
-         return res.status(403).json({ error: { message: "Model access denied for this token" } });
+         return sendError(res, 403, "Model access denied for this token", "invalid_request_error", inputFormat);
       }
 
       const isAnthropicInput = inputFormat === 'anthropic';
@@ -1220,20 +1247,12 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
       if (row.maxTokenUsage && row.maxTokenUsage > 0) {
         if (((row.inputTokens || 0) + (row.outputTokens || 0) + currentInputTokens) > row.maxTokenUsage) {
-            return res.status(403).json({ 
-                error: { 
-                    message: `Request would exceed the token usage limit. Current: ${(row.inputTokens || 0) + (row.outputTokens || 0)}, This Request: ${currentInputTokens}, Max: ${row.maxTokenUsage}`
-                } 
-            });
+            return sendError(res, 403, `Request would exceed the token usage limit. Current: ${(row.inputTokens || 0) + (row.outputTokens || 0)}, This Request: ${currentInputTokens}, Max: ${row.maxTokenUsage}`, "invalid_request_error", inputFormat);
         }
       }
 
       if (modelRow.maxInputTokens && currentInputTokens > modelRow.maxInputTokens) {
-        return res.status(400).json({ 
-            error: { 
-                message: `Input context length ${currentInputTokens} exceeds the limit of ${modelRow.maxInputTokens} for model '${modelId}'.`
-            } 
-        });
+        return sendError(res, 400, `Input context length ${currentInputTokens} exceeds the limit of ${modelRow.maxInputTokens} for model '${modelId}'.`, "invalid_request_error", inputFormat);
       }
 
       // --- Key Pool Rotation & Retries ---
@@ -1246,7 +1265,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       }
 
       if (apiKeys.length === 0) {
-          return res.status(500).json({ error: { message: "No API Key configured for this provider" } });
+          return sendError(res, 500, "No API Key configured for this provider", "api_error", inputFormat);
       }
 
       let lastUsedIndex = modelRow.lastUsedKeyIndex || 0;
@@ -1349,14 +1368,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
                if (currentAttempt < apiKeys.length) continue;
 
-               return res.json({
-                  id: "chatcmpl-error",
-                  object: "chat.completion",
-                  created: Math.floor(Date.now() / 1000),
-                  model: modelId,
-                  choices: [{ index: 0, message: { role: "assistant", content: "No API Key can be used to make this request" }, finish_reason: "stop" }],
-                  usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
-               });
+               return sendError(res, 503, "All available API keys for this model are exhausted or returned errors. Please try again later.", "api_error", inputFormat);
             }
 
             await db.update(providers).set({ lastUsedKeyIndex: keyIndex, updatedAt: new Date().toISOString() }).where(eq(providers.id, modelRow.providerId));
@@ -1574,7 +1586,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                     data = convertOpenAIToAnthropicResponse(data, modelId);
                 }
             } catch (e) {
-                return res.status(502).json({ error: { message: "Invalid JSON response from provider" } });
+                return sendError(res, 502, "Invalid JSON response from provider", "api_error", inputFormat);
             }
             
             const usage = data.usage || {};
@@ -1655,7 +1667,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             
             if (currentAttempt < apiKeys.length) continue;
             if (!res.headersSent) {
-                return res.json({ error: { message: "All attempts failed" } });
+                return sendError(res, 500, "All attempts failed", "api_error", inputFormat);
             }
             return;
           }
@@ -1663,7 +1675,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
   } catch (err: any) {
       console.error("handleChatRequest error:", err);
       if (!res.headersSent) {
-          res.status(500).json({ error: { message: "Internal server error" } });
+          sendError(res, 500, "Internal server error", "api_error", inputFormat);
       }
   }
 }
