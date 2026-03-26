@@ -17,6 +17,7 @@ export interface Provider {
   apiKey?: string;
   type?: 'openai' | 'anthropic';
   removeTopP?: boolean;
+  rotationStrategy?: 'circular' | 'progressive';
   lastUsedKeyIndex?: number;
 }
 

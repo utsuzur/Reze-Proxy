@@ -650,7 +650,7 @@ app.get('/api/providers', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/providers', requireAdmin, async (req, res) => {
-  const { id, name, baseUrl, apiKey, type, removeTopP } = req.body;
+  const { id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy } = req.body;
   try {
     const nowIso = new Date().toISOString();
     await db.insert(providers).values({
@@ -660,29 +660,30 @@ app.post('/api/providers', requireAdmin, async (req, res) => {
       apiKey,
       type,
       removeTopP: removeTopP ? 1 : 0,
+      rotationStrategy: rotationStrategy || 'circular',
       createdAt: nowIso,
       updatedAt: nowIso
     });
     modelCache.flushAll(); 
     await updateSyncState();
-    res.json({ id, name, baseUrl, apiKey, type, removeTopP });
+    res.json({ id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.put('/api/providers', requireAdmin, async (req, res) => {
-  const { id, name, baseUrl, apiKey, removeTopP } = req.body;
+  const { id, name, baseUrl, apiKey, removeTopP, rotationStrategy } = req.body;
   const nowIso = new Date().toISOString();
   
   try {
     if (apiKey && !apiKey.includes('...')) {
       await db.update(providers)
-        .set({ name, baseUrl, apiKey, removeTopP: removeTopP ? 1 : 0, updatedAt: nowIso })
+        .set({ name, baseUrl, apiKey, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', updatedAt: nowIso })
         .where(eq(providers.id, id));
     } else {
       await db.update(providers)
-        .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, updatedAt: nowIso })
+        .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', updatedAt: nowIso })
         .where(eq(providers.id, id));
     }
     modelCache.flushAll(); // Clear model cache when a provider is updated
@@ -1170,6 +1171,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 providerKey: providers.apiKey,
                 providerType: providers.type,
                 removeTopP: providers.removeTopP,
+                rotationStrategy: providers.rotationStrategy,
                 lastUsedKeyIndex: providers.lastUsedKeyIndex
             })
             .from(models)
@@ -1196,6 +1198,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 providerKey: providers.apiKey,
                 providerType: providers.type,
                 removeTopP: providers.removeTopP,
+                rotationStrategy: providers.rotationStrategy,
                 lastUsedKeyIndex: providers.lastUsedKeyIndex
             })
             .from(models)
@@ -1269,7 +1272,8 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       }
 
       let lastUsedIndex = modelRow.lastUsedKeyIndex || 0;
-      let startIndex = (lastUsedIndex + 1) % apiKeys.length;
+      let rotationStrategy = modelRow.rotationStrategy || 'circular';
+      let startIndex = rotationStrategy === 'progressive' ? 0 : (lastUsedIndex + 1) % apiKeys.length;
       let currentAttempt = 0;
       let success = false;
 

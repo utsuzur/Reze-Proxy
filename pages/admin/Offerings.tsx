@@ -41,6 +41,7 @@ const Offerings: React.FC = () => {
   const [newProviderKey, setNewProviderKey] = useState('');
   const [newProviderType, setNewProviderType] = useState<'openai' | 'anthropic'>('openai');
   const [newRemoveTopP, setNewRemoveTopP] = useState(false);
+  const [newRotationStrategy, setNewRotationStrategy] = useState<'circular' | 'progressive'>('circular');
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState('');
@@ -140,6 +141,7 @@ const Offerings: React.FC = () => {
             baseUrl: newProviderUrl,
             apiKey: newProviderKey,
             removeTopP: newRemoveTopP,
+            rotationStrategy: newRotationStrategy,
             type: newProviderType
         };
         await storageService.updateProvider(updatedProvider);
@@ -177,6 +179,7 @@ const Offerings: React.FC = () => {
             baseUrl: newProviderUrl,
             apiKey: newProviderKey,
             removeTopP: newRemoveTopP,
+            rotationStrategy: newRotationStrategy,
             type: newProviderType
         };
 
@@ -215,6 +218,7 @@ const Offerings: React.FC = () => {
       setNewProviderKey(provider.apiKey || ''); 
       setNewProviderType(provider.type || 'openai');
       setNewRemoveTopP(!!provider.removeTopP);
+      setNewRotationStrategy(provider.rotationStrategy || 'circular');
       setIsAdding(true);
       setFetchedModels([]);
   };
@@ -227,6 +231,7 @@ const Offerings: React.FC = () => {
       setNewProviderKey('');
       setNewProviderType('openai');
       setNewRemoveTopP(false);
+      setNewRotationStrategy('circular');
       setFetchedModels([]);
       setFetchError('');
   };
@@ -383,6 +388,22 @@ const Offerings: React.FC = () => {
                     <option value="anthropic">Anthropic</option>
                 </select>
             </div>
+            <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Rotation Strategy</label>
+                <select 
+                    value={newRotationStrategy}
+                    onChange={(e) => setNewRotationStrategy(e.target.value as 'circular' | 'progressive')}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none bg-white"
+                >
+                    <option value="circular">Circular (Round Robin)</option>
+                    <option value="progressive">Progressive (Priority)</option>
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">
+                    {newRotationStrategy === 'circular' 
+                        ? 'Rotates to the next key after every request.' 
+                        : 'Always starts from the first key, moving to the next only on failure.'}
+                </p>
+            </div>
             <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-slate-700 mb-1">Base URL</label>
                 <input 
@@ -474,7 +495,12 @@ const Offerings: React.FC = () => {
                         </div>
                         <div className="overflow-hidden">
                             <h3 className="font-semibold text-slate-800 truncate">{provider.name}</h3>
-                            <p className="text-xs text-slate-500 font-mono truncate max-w-[200px] md:max-w-md">{provider.baseUrl}</p>
+                            <div className="flex items-center gap-2">
+                                <p className="text-xs text-slate-500 font-mono truncate max-w-[150px] md:max-w-md">{provider.baseUrl}</p>
+                                <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 rounded text-[9px] uppercase font-bold tracking-wider">
+                                    {provider.rotationStrategy || 'circular'}
+                                </span>
+                            </div>
                         </div>
                     </div>
                     <div className="flex items-center gap-2 self-end md:self-auto" onClick={(e) => e.stopPropagation()}>
