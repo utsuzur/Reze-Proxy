@@ -640,6 +640,8 @@ app.get('/api/providers', requireAdmin, async (req, res) => {
         }
         return {
             ...r,
+            removeTopP: !!r.removeTopP,
+            tokenId: r.tokenId,
             apiKey: displayKey
         };
     });
@@ -650,7 +652,7 @@ app.get('/api/providers', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/providers', requireAdmin, async (req, res) => {
-  const { id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy } = req.body;
+  const { id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy, tokenId } = req.body;
   try {
     const nowIso = new Date().toISOString();
     await db.insert(providers).values({
@@ -661,29 +663,30 @@ app.post('/api/providers', requireAdmin, async (req, res) => {
       type,
       removeTopP: removeTopP ? 1 : 0,
       rotationStrategy: rotationStrategy || 'circular',
+      tokenId,
       createdAt: nowIso,
       updatedAt: nowIso
     });
     modelCache.flushAll(); 
     await updateSyncState();
-    res.json({ id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy });
+    res.json({ id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy, tokenId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.put('/api/providers', requireAdmin, async (req, res) => {
-  const { id, name, baseUrl, apiKey, removeTopP, rotationStrategy } = req.body;
+  const { id, name, baseUrl, apiKey, removeTopP, rotationStrategy, tokenId } = req.body;
   const nowIso = new Date().toISOString();
   
   try {
     if (apiKey && !apiKey.includes('...')) {
       await db.update(providers)
-        .set({ name, baseUrl, apiKey, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', updatedAt: nowIso })
+        .set({ name, baseUrl, apiKey, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', tokenId, updatedAt: nowIso })
         .where(eq(providers.id, id));
     } else {
       await db.update(providers)
-        .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', updatedAt: nowIso })
+        .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', tokenId, updatedAt: nowIso })
         .where(eq(providers.id, id));
     }
     modelCache.flushAll(); // Clear model cache when a provider is updated
@@ -810,6 +813,7 @@ app.get('/api/tokens', requireAdmin, async (req, res) => {
         return {
             ...r,
             isActive: r.isActive === 1,
+            isPrivate: r.isPrivate === 1,
             usageCount: r.usageCount || 0,
             inputTokens: r.inputTokens || 0,
             outputTokens: r.outputTokens || 0,
@@ -825,7 +829,7 @@ app.get('/api/tokens', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/tokens', requireAdmin, async (req, res) => {
-  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
+  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, isPrivate, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
   try {
     await db.insert(tokens).values({
@@ -837,6 +841,7 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
       accessibleModelIds: JSON.stringify(accessibleModelIds),
       usageCount: usageCount || 0,
       isActive: isActive !== undefined ? (isActive ? 1 : 0) : 1,
+      isPrivate: isPrivate ? 1 : 0,
       maxRequestsPerDay,
       maxRequestsPerMinute,
       maxTokenUsage,
@@ -854,7 +859,7 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
 });
 
 app.put('/api/tokens', requireAdmin, async (req, res) => {
-  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
+  const { id, name, token, expiresAt, accessibleModelIds, isActive, isPrivate, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
   
   try {
@@ -863,6 +868,7 @@ app.put('/api/tokens', requireAdmin, async (req, res) => {
       expiresAt,
       accessibleModelIds: JSON.stringify(accessibleModelIds),
       isActive: isActive ? 1 : 0,
+      isPrivate: isPrivate ? 1 : 0,
       maxRequestsPerDay,
       maxRequestsPerMinute,
       maxTokenUsage,
@@ -999,21 +1005,53 @@ import { countTokens, countMessagesTokens, countContentTokens } from './tokenSer
 
 app.get('/v1/models', async (req, res) => {
   try {
-    const rows = await db.select({
-      name: models.name,
-      providerName: providers.name
-    })
-    .from(models)
-    .innerJoin(providers, eq(models.providerId, providers.id))
-    .where(eq(models.isActive, 1));
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Missing Authorization Header" });
+    const tokenStr = authHeader.split(' ')[1];
+    
+    const tokenRows = await db.select().from(tokens).where(eq(tokens.token, tokenStr)).limit(1);
+    if (tokenRows.length === 0 || tokenRows[0].isActive === 0) {
+      return res.status(401).json({ error: "Invalid or inactive token" });
+    }
+    const tokenRow = tokenRows[0];
 
-    const formatted = rows.map(r => ({
-        id: `${r.providerName}/${r.name}`, // Expose provider/model
-        object: "model",
-        created: Math.floor(Date.now() / 1000),
-        owned_by: "reze-proxy"
-    }));
-    res.json({ object: "list", data: formatted });
+    if (tokenRow.isPrivate === 1) {
+        // Private Token: Only show its dedicated models
+        const rows = await db.select({
+          id: models.id,
+          name: models.name,
+          providerName: providers.name
+        })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(and(eq(providers.tokenId, tokenRow.id), eq(models.isActive, 1)));
+        
+        const formatted = rows.map(r => ({
+            id: `${tokenRow.name}-${r.id}`, // Custom unique ID
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "reze-proxy-private",
+            name: `${r.providerName}/${r.name}` // Regular name format
+        }));
+        return res.json({ object: "list", data: formatted });
+    } else {
+        // Regular Token: Show global models
+        const rows = await db.select({
+          name: models.name,
+          providerName: providers.name
+        })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(and(sql`${providers.tokenId} IS NULL`, eq(models.isActive, 1)));
+
+        const formatted = rows.map(r => ({
+            id: `${r.providerName}/${r.name}`,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "reze-proxy"
+        }));
+        return res.json({ object: "list", data: formatted });
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1151,13 +1189,16 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     // 2. Get Model (Cache -> DB)
     let modelRow: any = modelCache.get(modelId);
     if (!modelRow) {
-        // Try parsing "Provider/Model"
-        if (modelId.includes('/')) {
-            const parts = modelId.split('/');
-            const providerName = parts[0];
-            const modelName = parts.slice(1).join('/');
-            
-            const results = await db.select({
+        let results;
+        if (row.isPrivate === 1) {
+            // Private Token: Only allow its dedicated models via the unique ID (tokenName-modelId)
+            const prefix = `${row.name}-`;
+            if (!modelId.startsWith(prefix)) {
+                return sendError(res, 403, "Private tokens only have access to their designated private model pool.", "invalid_request_error", inputFormat);
+            }
+            const actualModelId = modelId.substring(prefix.length);
+
+            results = await db.select({
                 id: models.id,
                 providerId: models.providerId,
                 name: models.name,
@@ -1176,15 +1217,46 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             })
             .from(models)
             .innerJoin(providers, eq(models.providerId, providers.id))
-            .where(and(eq(providers.name, providerName), eq(models.name, modelName), eq(models.isActive, 1)))
+            .where(and(eq(providers.tokenId, row.id), eq(models.id, actualModelId), eq(models.isActive, 1)))
             .limit(1);
             
             modelRow = results[0];
+        } else {
+            // Regular Token: Try parsing "Provider/Model" (Global models only)
+            if (modelId.includes('/')) {
+                const parts = modelId.split('/');
+                const providerName = parts[0];
+                const modelName = parts.slice(1).join('/');
+                
+                results = await db.select({
+                    id: models.id,
+                    providerId: models.providerId,
+                    name: models.name,
+                    maxInputTokens: models.maxInputTokens,
+                    maxOutputTokens: models.maxOutputTokens,
+                    pricingModelId: models.pricingModelId,
+                    inputPricePer1k: models.inputPricePer1k,
+                    outputPricePer1k: models.outputPricePer1k,
+                    isActive: models.isActive,
+                    baseUrl: providers.baseUrl,
+                    providerKey: providers.apiKey,
+                    providerType: providers.type,
+                    removeTopP: providers.removeTopP,
+                    rotationStrategy: providers.rotationStrategy,
+                    lastUsedKeyIndex: providers.lastUsedKeyIndex
+                })
+                .from(models)
+                .innerJoin(providers, eq(models.providerId, providers.id))
+                .where(and(eq(providers.name, providerName), eq(models.name, modelName), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
+                .limit(1);
+                
+                modelRow = results[0];
+            }
         }
 
-        // Fallback: Try searching by model name directly (legacy/ambiguous mode)
-        if (!modelRow) {
-            const results = await db.select({
+        // Fallback: Try searching by model name or direct ID (Global models only)
+        if (!modelRow && row.isPrivate !== 1) {
+            let results = await db.select({
                 id: models.id,
                 providerId: models.providerId,
                 name: models.name,
@@ -1203,10 +1275,36 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             })
             .from(models)
             .innerJoin(providers, eq(models.providerId, providers.id))
-            .where(and(eq(models.name, modelId), eq(models.isActive, 1)))
+            .where(and(eq(models.id, modelId), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
             .limit(1);
             
             modelRow = results[0];
+
+            if (!modelRow) {
+                results = await db.select({
+                    id: models.id,
+                    providerId: models.providerId,
+                    name: models.name,
+                    maxInputTokens: models.maxInputTokens,
+                    maxOutputTokens: models.maxOutputTokens,
+                    pricingModelId: models.pricingModelId,
+                    inputPricePer1k: models.inputPricePer1k,
+                    outputPricePer1k: models.outputPricePer1k,
+                    isActive: models.isActive,
+                    baseUrl: providers.baseUrl,
+                    providerKey: providers.apiKey,
+                    providerType: providers.type,
+                    removeTopP: providers.removeTopP,
+                    rotationStrategy: providers.rotationStrategy,
+                    lastUsedKeyIndex: providers.lastUsedKeyIndex
+                })
+                .from(models)
+                .innerJoin(providers, eq(models.providerId, providers.id))
+                .where(and(eq(models.name, modelId), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
+                .limit(1);
+                
+                modelRow = results[0];
+            }
         }
 
         if (modelRow) modelCache.set(modelId, modelRow);

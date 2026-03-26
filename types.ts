@@ -18,6 +18,7 @@ export interface Provider {
   type?: 'openai' | 'anthropic';
   removeTopP?: boolean;
   rotationStrategy?: 'circular' | 'progressive';
+  tokenId?: string;
   lastUsedKeyIndex?: number;
 }
 
@@ -37,6 +38,7 @@ export interface UserToken {
   maxTokenUsage?: number;
   maxCostUsage?: number; // Budget in USD
   isActive: boolean;
+  isPrivate?: boolean;
   tokenType?: 'rpd' | 'credits';
   tier?: 'standard' | 'plus';
   creditBalance?: number;

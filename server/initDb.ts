@@ -147,6 +147,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 type TEXT DEFAULT 'openai_compatible',
                 removeTopP INTEGER DEFAULT 0,
                 rotationStrategy TEXT DEFAULT 'circular',
+                tokenId TEXT,
                 lastUsedKeyIndex INTEGER DEFAULT 0,
                 createdAt TEXT,
                 updatedAt TEXT
@@ -190,6 +191,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 lastRequestMinute TEXT,
                 tokenType TEXT DEFAULT 'rpd',
                 tier TEXT DEFAULT 'standard',
+                isPrivate INTEGER DEFAULT 0,
                 creditBalance REAL DEFAULT 0,
                 updatedAt TEXT
             );
@@ -244,10 +246,10 @@ async function initializeTableSchema(database: any, connection: any, type: strin
 
         // Migration: Add columns if they don't exist
         const tablesToMigrate = [
-            { name: 'providers', columns: ['createdAt', 'updatedAt', 'removeTopP', 'rotationStrategy', 'lastUsedKeyIndex'] },
+            { name: 'providers', columns: ['createdAt', 'updatedAt', 'removeTopP', 'rotationStrategy', 'tokenId', 'lastUsedKeyIndex'] },
             { name: 'models', columns: ['createdAt', 'updatedAt', 'pricingModelId', 'inputPricePer1k', 'outputPricePer1k', 'isActive'] },
             { name: 'tokens', columns: [
-                'createdAt', 'updatedAt', 'tokenType', 'tier', 'creditBalance', 
+                'createdAt', 'updatedAt', 'tokenType', 'tier', 'isPrivate', 'creditBalance', 
                 'maxRequestsPerDay', 'maxRequestsPerMinute', 'maxTokenUsage', 'maxCostUsage',
                 'usageCount', 'inputTokens', 'outputTokens', 'totalCost', 'accessibleModelIds',
                 'requestsToday', 'lastRequestDate', 'requestsThisMinute', 'lastRequestMinute'
@@ -275,6 +277,8 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                             if (column === 'creditBalance') colDef = "creditBalance REAL DEFAULT 0";
                             if (column === 'removeTopP') colDef = "removeTopP INTEGER DEFAULT 0";
                             if (column === 'rotationStrategy') colDef = "rotationStrategy TEXT DEFAULT 'circular'";
+                            if (column === 'tokenId') colDef = "tokenId TEXT";
+                            if (column === 'isPrivate') colDef = "isPrivate INTEGER DEFAULT 0";
                             if (column === 'lastUsedKeyIndex') colDef = "lastUsedKeyIndex INTEGER DEFAULT 0";
 
                             sqlite.exec(`ALTER TABLE ${table.name} ADD COLUMN ${colDef}`);
@@ -321,6 +325,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                         type TEXT DEFAULT 'openai_compatible',
                         removetopp INTEGER DEFAULT 0,
                         rotation_strategy TEXT DEFAULT 'circular',
+                        tokenid TEXT,
                         lastusedkeyindex INTEGER DEFAULT 0,
                         "createdAt" TIMESTAMP DEFAULT NOW(),
                         "updatedAt" TIMESTAMP DEFAULT NOW()
@@ -370,6 +375,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                         lastrequestminute TEXT,
                         tokentype TEXT DEFAULT 'rpd',
                         tier TEXT DEFAULT 'standard',
+                        isprivate INTEGER DEFAULT 0,
                         creditbalance REAL DEFAULT 0,
                         "updatedAt" TIMESTAMP DEFAULT NOW()
                     )
@@ -439,6 +445,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 // Migration for existing Postgres tables
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tokentype TEXT DEFAULT 'rpd'`); } catch(e) { console.error("Migration failed for tokentype:", e); }
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'standard'`); } catch(e) { console.error("Migration failed for tier:", e); }
+                try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS isprivate INTEGER DEFAULT 0`); } catch(e) { console.error("Migration failed for isprivate:", e); }
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS creditbalance REAL DEFAULT 0`); } catch(e) { console.error("Migration failed for creditbalance:", e); }
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) { console.error("Migration failed for createdAt:", e); }
                 try { await (database as any).execute(sql`ALTER TABLE tokens ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) { console.error("Migration failed for updatedAt:", e); }
@@ -451,6 +458,7 @@ async function initializeTableSchema(database: any, connection: any, type: strin
                 try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}
                 try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS removetopp INTEGER DEFAULT 0`); } catch(e) {}
                 try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS rotation_strategy TEXT DEFAULT 'circular'`); } catch(e) {}
+                try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS tokenid TEXT`); } catch(e) {}
                 try { await (database as any).execute(sql`ALTER TABLE providers ADD COLUMN IF NOT EXISTS lastusedkeyindex INTEGER DEFAULT 0`); } catch(e) {}
 
                 try { await (database as any).execute(sql`ALTER TABLE models ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP DEFAULT NOW()`); } catch(e) {}

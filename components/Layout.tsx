@@ -122,7 +122,15 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
                 className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/shrine/manage-tokens') ? 'bg-reze-50 text-reze-700 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
               >
                 <Key className="w-5 h-5" />
-                User Tokens
+                Standard Tokens
+              </Link>
+              <Link
+                to="/shrine/private-keys"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/shrine/private-keys') ? 'bg-reze-50 text-reze-700 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+              >
+                <Shield className="w-5 h-5" />
+                Private Keys
               </Link>
               <Link
                 to="/shrine/errors"

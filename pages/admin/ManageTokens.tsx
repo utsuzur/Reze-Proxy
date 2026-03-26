@@ -32,7 +32,7 @@ const ManageTokens: React.FC = () => {
         setError(null);
         try {
             const tokenList = await storageService.getTokens();
-            setTokens(tokenList);
+            setTokens(tokenList.filter(t => !t.isPrivate));
             const models = await storageService.getModels();
             setAvailableModels(models.filter(m => m.isActive));
         } catch (err: any) {
@@ -171,8 +171,8 @@ const ManageTokens: React.FC = () => {
     <div>
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Access Tokens</h1>
-          <p className="text-slate-500">Manage user authentication tokens</p>
+          <h1 className="text-2xl font-bold text-slate-800">Standard Tokens</h1>
+          <p className="text-slate-500">Manage standard user authentication tokens</p>
         </div>
         <button 
           onClick={() => { resetForm(); setIsCreating(true); }}
