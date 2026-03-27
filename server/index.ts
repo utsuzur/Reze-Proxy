@@ -1017,15 +1017,16 @@ app.get('/v1/models', async (req, res) => {
 
     if (tokenRow.isPrivate === 1) {
         // Private Token: Only show its dedicated models
+        console.log('[/v1/models] private token id:', tokenRow.id, 'isPrivate:', tokenRow.isPrivate);
         const rows = await db.select({
           id: models.id,
-          name: models.name,
-          providerName: providers.name
+          name: models.name
         })
         .from(models)
         .innerJoin(providers, eq(models.providerId, providers.id))
         .where(and(eq(providers.tokenId, tokenRow.id), eq(models.isActive, 1)));
-        
+        console.log('[/v1/models] private rows found:', rows.length, JSON.stringify(rows));
+
         const formatted = rows.map(r => ({
             id: r.id,
             object: "model",
@@ -1408,7 +1409,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             let requestBody;
             if (skipRequestConversion) {
-                requestBody = { ...req.body, model: modelRow.id };
+                requestBody = { ...req.body, model: modelRow.name };
                 delete requestBody.extended_ttl;
                 // Enforce max output tokens
                 if (modelRow.maxOutputTokens) {
@@ -1425,7 +1426,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                     }
                 }
                 
-                requestBody = { ...body, model: modelRow.id };
+                requestBody = { ...body, model: modelRow.name };
                 delete requestBody.extended_ttl;
 
                 if (finalMaxTokens) {
@@ -1437,7 +1438,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 }
 
                 if (isAnthropic) {
-                    requestBody = convertOpenAIToAnthropic(requestBody, modelRow.id);
+                    requestBody = convertOpenAIToAnthropic(requestBody, modelRow.name);
                 }
             }
 
