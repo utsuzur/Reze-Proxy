@@ -102,6 +102,14 @@ const PrivateKeys: React.FC = () => {
     setEditCreditBalance(token.creditBalance ? String(token.creditBalance) : '');
   };
 
+  const handleRegenToken = async (tokenId: string) => {
+    if (!window.confirm('Regenerate this private key? The old key will stop working immediately.')) return;
+    const newTokenStr = generateRandomToken();
+    await storageService.updateToken({ id: tokenId, token: newTokenStr, isPrivate: true });
+    window.alert(`New key: ${newTokenStr}`);
+    loadData();
+  };
+
   const handleSaveTokenEdit = async (tokenId: string) => {
     const token = tokens.find(t => t.id === tokenId);
     await storageService.updateToken({
@@ -269,6 +277,7 @@ const PrivateKeys: React.FC = () => {
                               </span>
                           </div>
                           <div className="flex items-center gap-2">
+                              <button onClick={() => handleRegenToken(token.id)} className="text-slate-400 hover:text-yellow-600 transition-colors" title="Regenerate key"><RefreshCw className="w-4 h-4" /></button>
                               <button onClick={() => handleEditToken(token)} className="text-slate-400 hover:text-slate-700 transition-colors"><Edit2 className="w-4 h-4" /></button>
                               <button onClick={() => handleDeleteToken(token.id)} className="text-red-500 hover:text-red-700 transition-colors"><Trash2 className="w-4 h-4" /></button>
                           </div>
