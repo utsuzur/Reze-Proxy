@@ -9,10 +9,21 @@ const PrivateKeys: React.FC = () => {
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  
+
   // Private Token Form State
   const [newName, setNewName] = useState('');
+  const [newTier, setNewTier] = useState<'standard' | 'plus'>('standard');
+  const [newTokenType, setNewTokenType] = useState<'rpd' | 'credits'>('rpd');
+  const [newDailyLimit, setNewDailyLimit] = useState('');
+  const [newCreditBalance, setNewCreditBalance] = useState('');
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
+
+  // Edit token state
+  const [editingTokenId, setEditingTokenId] = useState<string | null>(null);
+  const [editTier, setEditTier] = useState<'standard' | 'plus'>('standard');
+  const [editTokenType, setEditTokenType] = useState<'rpd' | 'credits'>('rpd');
+  const [editDailyLimit, setEditDailyLimit] = useState('');
+  const [editCreditBalance, setEditCreditBalance] = useState('');
 
   // Private Provider Form State
   const [isAddingProvider, setIsAddingProvider] = useState<string | null>(null); // tokenId
@@ -62,8 +73,10 @@ const PrivateKeys: React.FC = () => {
         totalCost: 0,
         isActive: true,
         isPrivate: true,
-        tokenType: 'rpd',
-        tier: 'standard'
+        tokenType: newTokenType,
+        tier: newTier,
+        maxRequestsPerDay: newTokenType === 'rpd' && newDailyLimit ? parseInt(newDailyLimit) : undefined,
+        creditBalance: newTokenType === 'credits' && newCreditBalance ? parseFloat(newCreditBalance) : 0,
     };
     await storageService.saveToken(newToken);
     setGeneratedToken(tokenStr);
@@ -73,13 +86,32 @@ const PrivateKeys: React.FC = () => {
   const handleDeleteToken = async (id: string) => {
     if (window.confirm('Revoke this private key and delete all its dedicated pools?')) {
         await storageService.deleteToken(id);
-        // Also need to delete associated providers - the backend should handle this or we do it here
         const privateProviders = providers.filter(p => p.tokenId === id);
         for (const p of privateProviders) {
             await storageService.deleteProvider(p.id);
         }
         loadData();
     }
+  };
+
+  const handleEditToken = (token: UserToken) => {
+    setEditingTokenId(token.id);
+    setEditTier((token.tier as 'standard' | 'plus') || 'standard');
+    setEditTokenType((token.tokenType as 'rpd' | 'credits') || 'rpd');
+    setEditDailyLimit(token.maxRequestsPerDay ? String(token.maxRequestsPerDay) : '');
+    setEditCreditBalance(token.creditBalance ? String(token.creditBalance) : '');
+  };
+
+  const handleSaveTokenEdit = async (tokenId: string) => {
+    await storageService.updateToken({
+        id: tokenId,
+        tier: editTier,
+        tokenType: editTokenType,
+        maxRequestsPerDay: editTokenType === 'rpd' && editDailyLimit ? parseInt(editDailyLimit) : undefined,
+        creditBalance: editTokenType === 'credits' && editCreditBalance ? parseFloat(editCreditBalance) : 0,
+    });
+    setEditingTokenId(null);
+    loadData();
   };
 
   const handleFetchModels = async () => {
@@ -165,13 +197,41 @@ const PrivateKeys: React.FC = () => {
               {!generatedToken ? (
                   <div className="space-y-4">
                       <h3 className="text-lg font-semibold">Create Private Key</h3>
-                      <input 
-                        type="text" 
+                      <input
+                        type="text"
                         value={newName}
                         onChange={(e) => setNewName(e.target.value)}
                         placeholder="Key Name (e.g. My-Private-App)"
                         className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-slate-500 outline-none"
                       />
+                      <div className="grid grid-cols-2 gap-3">
+                          <div>
+                              <label className="block text-xs font-medium text-slate-500 mb-1">Tier</label>
+                              <select value={newTier} onChange={e => setNewTier(e.target.value as any)} className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none">
+                                  <option value="standard">Standard</option>
+                                  <option value="plus">Plus</option>
+                              </select>
+                          </div>
+                          <div>
+                              <label className="block text-xs font-medium text-slate-500 mb-1">Billing Type</label>
+                              <select value={newTokenType} onChange={e => setNewTokenType(e.target.value as any)} className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none">
+                                  <option value="rpd">Daily Limit (RPD)</option>
+                                  <option value="credits">Credits</option>
+                              </select>
+                          </div>
+                      </div>
+                      {newTokenType === 'rpd' && (
+                          <div>
+                              <label className="block text-xs font-medium text-slate-500 mb-1">Daily Request Limit</label>
+                              <input type="number" value={newDailyLimit} onChange={e => setNewDailyLimit(e.target.value)} placeholder="e.g. 100 (leave blank for unlimited)" className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none" />
+                          </div>
+                      )}
+                      {newTokenType === 'credits' && (
+                          <div>
+                              <label className="block text-xs font-medium text-slate-500 mb-1">Starting Credit Balance ($)</label>
+                              <input type="number" step="0.01" value={newCreditBalance} onChange={e => setNewCreditBalance(e.target.value)} placeholder="e.g. 10.00" className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none" />
+                          </div>
+                      )}
                       <div className="flex justify-end gap-3">
                           <button onClick={() => setIsCreating(false)} className="px-4 py-2 text-slate-600">Cancel</button>
                           <button onClick={handleCreatePrivateToken} className="px-4 py-2 bg-slate-800 text-white rounded-lg">Generate</button>
@@ -181,7 +241,7 @@ const PrivateKeys: React.FC = () => {
                   <div className="text-center py-4">
                       <h4 className="text-xl font-bold text-green-600 mb-2">Private Key Generated!</h4>
                       <code className="block bg-slate-100 p-4 rounded-lg font-mono mb-4">{generatedToken}</code>
-                      <button onClick={() => { setIsCreating(false); setGeneratedToken(null); setNewName(''); }} className="px-6 py-2 bg-slate-800 text-white rounded-lg">Done</button>
+                      <button onClick={() => { setIsCreating(false); setGeneratedToken(null); setNewName(''); setNewTier('standard'); setNewTokenType('rpd'); setNewDailyLimit(''); setNewCreditBalance(''); }} className="px-6 py-2 bg-slate-800 text-white rounded-lg">Done</button>
                   </div>
               )}
           </div>
@@ -198,9 +258,56 @@ const PrivateKeys: React.FC = () => {
                               <Shield className="w-5 h-5 text-slate-600" />
                               <h3 className="font-bold text-slate-800 text-lg">{token.name}</h3>
                               <span className="text-xs bg-slate-200 px-2 py-0.5 rounded uppercase font-bold text-slate-600">Private</span>
+                              <span className={`text-xs px-2 py-0.5 rounded uppercase font-bold ${
+                                  token.tier === 'plus' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-500'
+                              }`}>{token.tier || 'standard'}</span>
+                              <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded uppercase font-bold">
+                                  {token.tokenType === 'credits' ? `$${(token.creditBalance || 0).toFixed(2)} credits` : `RPD${token.maxRequestsPerDay ? `: ${token.maxRequestsPerDay}/day` : ': unlimited'}`}
+                              </span>
                           </div>
-                          <button onClick={() => handleDeleteToken(token.id)} className="text-red-500 hover:text-red-700 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                          <div className="flex items-center gap-2">
+                              <button onClick={() => handleEditToken(token)} className="text-slate-400 hover:text-slate-700 transition-colors"><Edit2 className="w-4 h-4" /></button>
+                              <button onClick={() => handleDeleteToken(token.id)} className="text-red-500 hover:text-red-700 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                          </div>
                       </div>
+
+                      {editingTokenId === token.id && (
+                          <div className="p-4 bg-yellow-50 border-b border-yellow-200 space-y-3">
+                              <h4 className="text-sm font-bold text-slate-700">Edit Token Settings</h4>
+                              <div className="grid grid-cols-2 gap-3">
+                                  <div>
+                                      <label className="block text-xs font-medium text-slate-500 mb-1">Tier</label>
+                                      <select value={editTier} onChange={e => setEditTier(e.target.value as any)} className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none text-sm">
+                                          <option value="standard">Standard</option>
+                                          <option value="plus">Plus</option>
+                                      </select>
+                                  </div>
+                                  <div>
+                                      <label className="block text-xs font-medium text-slate-500 mb-1">Billing Type</label>
+                                      <select value={editTokenType} onChange={e => setEditTokenType(e.target.value as any)} className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none text-sm">
+                                          <option value="rpd">Daily Limit (RPD)</option>
+                                          <option value="credits">Credits</option>
+                                      </select>
+                                  </div>
+                              </div>
+                              {editTokenType === 'rpd' && (
+                                  <div>
+                                      <label className="block text-xs font-medium text-slate-500 mb-1">Daily Request Limit</label>
+                                      <input type="number" value={editDailyLimit} onChange={e => setEditDailyLimit(e.target.value)} placeholder="Leave blank for unlimited" className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none text-sm" />
+                                  </div>
+                              )}
+                              {editTokenType === 'credits' && (
+                                  <div>
+                                      <label className="block text-xs font-medium text-slate-500 mb-1">Credit Balance ($)</label>
+                                      <input type="number" step="0.01" value={editCreditBalance} onChange={e => setEditCreditBalance(e.target.value)} placeholder="e.g. 10.00" className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none text-sm" />
+                                  </div>
+                              )}
+                              <div className="flex justify-end gap-2">
+                                  <button onClick={() => setEditingTokenId(null)} className="px-3 py-1.5 text-sm text-slate-600">Cancel</button>
+                                  <button onClick={() => handleSaveTokenEdit(token.id)} className="px-3 py-1.5 text-sm bg-slate-800 text-white rounded-lg">Save</button>
+                              </div>
+                          </div>
+                      )}
                       
                       <div className="p-6">
                           <div className="flex justify-between items-center mb-4">
