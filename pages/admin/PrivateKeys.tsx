@@ -103,8 +103,11 @@ const PrivateKeys: React.FC = () => {
   };
 
   const handleSaveTokenEdit = async (tokenId: string) => {
+    const token = tokens.find(t => t.id === tokenId);
     await storageService.updateToken({
         id: tokenId,
+        isActive: token?.isActive ?? true,
+        isPrivate: true,
         tier: editTier,
         tokenType: editTokenType,
         maxRequestsPerDay: editTokenType === 'rpd' && editDailyLimit ? parseInt(editDailyLimit) : undefined,

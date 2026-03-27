@@ -861,23 +861,21 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
 app.put('/api/tokens', requireAdmin, async (req, res) => {
   const { id, name, token, expiresAt, accessibleModelIds, isActive, isPrivate, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
-  
+
   try {
-    const updateData: any = {
-      name,
-      expiresAt,
-      accessibleModelIds: JSON.stringify(accessibleModelIds),
-      isActive: isActive ? 1 : 0,
-      isPrivate: isPrivate ? 1 : 0,
-      maxRequestsPerDay,
-      maxRequestsPerMinute,
-      maxTokenUsage,
-      maxCostUsage,
-      tokenType,
-      tier,
-      creditBalance,
-      updatedAt: nowIso
-    };
+    const updateData: any = { updatedAt: nowIso };
+    if (name !== undefined) updateData.name = name;
+    if (expiresAt !== undefined) updateData.expiresAt = expiresAt;
+    if (accessibleModelIds !== undefined) updateData.accessibleModelIds = JSON.stringify(accessibleModelIds);
+    if (isActive !== undefined) updateData.isActive = isActive ? 1 : 0;
+    if (isPrivate !== undefined) updateData.isPrivate = isPrivate ? 1 : 0;
+    if (maxRequestsPerDay !== undefined) updateData.maxRequestsPerDay = maxRequestsPerDay;
+    if (maxRequestsPerMinute !== undefined) updateData.maxRequestsPerMinute = maxRequestsPerMinute;
+    if (maxTokenUsage !== undefined) updateData.maxTokenUsage = maxTokenUsage;
+    if (maxCostUsage !== undefined) updateData.maxCostUsage = maxCostUsage;
+    if (tokenType !== undefined) updateData.tokenType = tokenType;
+    if (tier !== undefined) updateData.tier = tier;
+    if (creditBalance !== undefined) updateData.creditBalance = creditBalance;
     if (token) updateData.token = token;
 
     await db.update(tokens).set(updateData).where(eq(tokens.id, id));
