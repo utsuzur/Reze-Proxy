@@ -518,7 +518,7 @@ app.get('/api/public/providers', async (req, res) => {
     })
     .from(providers)
     .innerJoin(models, eq(models.providerId, providers.id))
-    .where(eq(models.isActive, 1))
+    .where(and(eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
     .groupBy(providers.id)
     .orderBy(providers.name);
     
@@ -544,7 +544,7 @@ app.get('/api/public/models', async (req, res) => {
     })
     .from(models)
     .innerJoin(providers, eq(models.providerId, providers.id))
-    .where(eq(models.isActive, 1));
+    .where(and(eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`));
 
     const formatted = rows.map((r) => ({
       ...r,
@@ -1027,11 +1027,11 @@ app.get('/v1/models', async (req, res) => {
         .where(and(eq(providers.tokenId, tokenRow.id), eq(models.isActive, 1)));
         
         const formatted = rows.map(r => ({
-            id: `${tokenRow.name}-${r.id}`, // Custom unique ID
+            id: r.id,
             object: "model",
             created: Math.floor(Date.now() / 1000),
             owned_by: "reze-proxy-private",
-            name: `${r.providerName}/${r.name}` // Regular name format
+            name: r.name
         }));
         return res.json({ object: "list", data: formatted });
     } else {
@@ -1191,13 +1191,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     if (!modelRow) {
         let results;
         if (row.isPrivate === 1) {
-            // Private Token: Only allow its dedicated models via the unique ID (tokenName-modelId)
-            const prefix = `${row.name}-`;
-            if (!modelId.startsWith(prefix)) {
-                return sendError(res, 403, "Private tokens only have access to their designated private model pool.", "invalid_request_error", inputFormat);
-            }
-            const actualModelId = modelId.substring(prefix.length);
-
+            // Private Token: Only allow its dedicated models via the full ID (tokenName-modelId)
             results = await db.select({
                 id: models.id,
                 providerId: models.providerId,
@@ -1217,9 +1211,12 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             })
             .from(models)
             .innerJoin(providers, eq(models.providerId, providers.id))
-            .where(and(eq(providers.tokenId, row.id), eq(models.id, actualModelId), eq(models.isActive, 1)))
+            .where(and(eq(providers.tokenId, row.id), eq(models.id, modelId), eq(models.isActive, 1)))
             .limit(1);
-            
+
+            if (!results[0]) {
+                return sendError(res, 403, "Private tokens only have access to their designated private model pool.", "invalid_request_error", inputFormat);
+            }
             modelRow = results[0];
         } else {
             // Regular Token: Try parsing "Provider/Model" (Global models only)
