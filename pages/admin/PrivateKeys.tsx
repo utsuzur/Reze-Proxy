@@ -24,6 +24,7 @@ const PrivateKeys: React.FC = () => {
   const [editTokenType, setEditTokenType] = useState<'rpd' | 'credits'>('rpd');
   const [editDailyLimit, setEditDailyLimit] = useState('');
   const [editCreditBalance, setEditCreditBalance] = useState('');
+  const [regenTokenStr, setRegenTokenStr] = useState<string | null>(null);
 
   // Private Provider Form State
   const [isAddingProvider, setIsAddingProvider] = useState<string | null>(null); // tokenId
@@ -100,13 +101,14 @@ const PrivateKeys: React.FC = () => {
     setEditTokenType((token.tokenType as 'rpd' | 'credits') || 'rpd');
     setEditDailyLimit(token.maxRequestsPerDay ? String(token.maxRequestsPerDay) : '');
     setEditCreditBalance(token.creditBalance ? String(token.creditBalance) : '');
+    setRegenTokenStr(null);
   };
 
   const handleRegenToken = async (tokenId: string) => {
     if (!window.confirm('Regenerate this private key? The old key will stop working immediately.')) return;
     const newTokenStr = generateRandomToken();
     await storageService.updateToken({ id: tokenId, token: newTokenStr, isPrivate: true });
-    window.alert(`New key: ${newTokenStr}`);
+    setRegenTokenStr(newTokenStr);
     loadData();
   };
 
@@ -277,7 +279,6 @@ const PrivateKeys: React.FC = () => {
                               </span>
                           </div>
                           <div className="flex items-center gap-2">
-                              <button onClick={() => handleRegenToken(token.id)} className="text-slate-400 hover:text-yellow-600 transition-colors" title="Regenerate key"><RefreshCw className="w-4 h-4" /></button>
                               <button onClick={() => handleEditToken(token)} className="text-slate-400 hover:text-slate-700 transition-colors"><Edit2 className="w-4 h-4" /></button>
                               <button onClick={() => handleDeleteToken(token.id)} className="text-red-500 hover:text-red-700 transition-colors"><Trash2 className="w-4 h-4" /></button>
                           </div>
@@ -314,8 +315,22 @@ const PrivateKeys: React.FC = () => {
                                       <input type="number" step="0.01" value={editCreditBalance} onChange={e => setEditCreditBalance(e.target.value)} placeholder="e.g. 10.00" className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none text-sm" />
                                   </div>
                               )}
+                              <div className="border-t pt-3">
+                                  <label className="block text-xs font-medium text-slate-500 mb-2">Regenerate Key</label>
+                                  {regenTokenStr && editingTokenId === token.id ? (
+                                      <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                                          <p className="text-xs text-green-700 mb-1 font-medium">New key (copy it now):</p>
+                                          <code className="block font-mono text-sm text-green-900 break-all">{regenTokenStr}</code>
+                                      </div>
+                                  ) : (
+                                      <button onClick={() => handleRegenToken(token.id)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg hover:bg-yellow-100 transition-colors">
+                                          <RefreshCw className="w-3.5 h-3.5" />
+                                          Regenerate Key
+                                      </button>
+                                  )}
+                              </div>
                               <div className="flex justify-end gap-2">
-                                  <button onClick={() => setEditingTokenId(null)} className="px-3 py-1.5 text-sm text-slate-600">Cancel</button>
+                                  <button onClick={() => { setEditingTokenId(null); setRegenTokenStr(null); }} className="px-3 py-1.5 text-sm text-slate-600">Cancel</button>
                                   <button onClick={() => handleSaveTokenEdit(token.id)} className="px-3 py-1.5 text-sm bg-slate-800 text-white rounded-lg">Save</button>
                               </div>
                           </div>
