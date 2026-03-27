@@ -1028,7 +1028,7 @@ app.get('/v1/models', async (req, res) => {
         console.log('[/v1/models] private rows found:', rows.length, JSON.stringify(rows));
 
         const formatted = rows.map(r => ({
-            id: r.id,
+            id: r.name,
             object: "model",
             created: Math.floor(Date.now() / 1000),
             owned_by: "reze-proxy-private",
@@ -1192,7 +1192,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     if (!modelRow) {
         let results;
         if (row.isPrivate === 1) {
-            // Private Token: Only allow its dedicated models via the full ID (tokenName-modelId)
+            // Private Token: match by model name OR full ID
             results = await db.select({
                 id: models.id,
                 providerId: models.providerId,
@@ -1212,7 +1212,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             })
             .from(models)
             .innerJoin(providers, eq(models.providerId, providers.id))
-            .where(and(eq(providers.tokenId, row.id), eq(models.id, modelId), eq(models.isActive, 1)))
+            .where(and(eq(providers.tokenId, row.id), sql`(${models.id} = ${modelId} OR ${models.name} = ${modelId})`, eq(models.isActive, 1)))
             .limit(1);
 
             if (!results[0]) {
