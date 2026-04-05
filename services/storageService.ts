@@ -110,13 +110,18 @@ class StorageService {
     });
   }
 
-  async updateModel(model: ModelConfig): Promise<void> {
-    await fetch(`${API_URL}/models`, {
+  async updateModel(model: ModelConfig): Promise<{ updated: number; id?: string }> {
+    const res = await fetch(`${API_URL}/models`, {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
       body: JSON.stringify(model)
     });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Failed to update model' }));
+      throw new Error(error.error || 'Failed to update model');
+    }
+    return await res.json();
   }
 
   // --- Tokens ---

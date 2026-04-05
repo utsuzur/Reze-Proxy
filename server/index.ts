@@ -772,8 +772,42 @@ app.put('/api/models', requireAdmin, async (req, res) => {
     const m = req.body;
     const nowIso = new Date().toISOString();
     try {
+        const lookupId = typeof m.originalId === 'string' && m.originalId.trim() ? m.originalId.trim() : m.id;
+        const existingRows = await db.select({
+            id: models.id,
+            name: models.name,
+            providerTokenId: providers.tokenId
+        })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(and(eq(models.id, lookupId), eq(models.providerId, m.providerId)))
+        .limit(1);
+
+        const existing = existingRows[0];
+        if (!existing) {
+            return res.status(404).json({ error: 'Model not found' });
+        }
+
+        const isPrivateModel = !!existing.providerTokenId;
+        const requestedId = typeof m.id === 'string' && m.id.trim() ? m.id.trim() : existing.id;
+        const nextId = isPrivateModel && existing.id !== existing.name && requestedId === existing.id
+            ? existing.name
+            : requestedId;
+
+        if (nextId !== lookupId) {
+            const conflictingRows = await db.select({ id: models.id })
+                .from(models)
+                .where(and(eq(models.id, nextId), eq(models.providerId, m.providerId)))
+                .limit(1);
+
+            if (conflictingRows[0]) {
+                return res.status(409).json({ error: 'Model ID already exists for this provider' });
+            }
+        }
+
         await db.update(models)
             .set({
+                id: nextId,
                 name: m.name,
                 maxInputTokens: m.maxInputTokens,
                 maxOutputTokens: m.maxOutputTokens,
@@ -783,10 +817,10 @@ app.put('/api/models', requireAdmin, async (req, res) => {
                 isActive: m.isActive ? 1 : 0,
                 updatedAt: nowIso
             })
-            .where(and(eq(models.id, m.id), eq(models.providerId, m.providerId)));
+            .where(and(eq(models.id, lookupId), eq(models.providerId, m.providerId)));
         modelCache.flushAll(); 
         await updateSyncState();
-        res.json({ updated: 1 });
+        res.json({ updated: 1, id: nextId });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
@@ -1182,11 +1216,11 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     }).where(eq(tokens.id, row.id));
     await updateSyncState();
 
-    const modelId = req.body.model;
-    if (!modelId) return sendError(res, 400, "Model is required", "invalid_request_error", inputFormat);
+    const requestedModelId = req.body.model;
+    if (!requestedModelId) return sendError(res, 400, "Model is required", "invalid_request_error", inputFormat);
 
     // 2. Get Model (Cache -> DB)
-    let modelRow: any = modelCache.get(modelId);
+    let modelRow: any = modelCache.get(requestedModelId);
     if (!modelRow) {
         let results;
         if (row.isPrivate === 1) {
@@ -1210,7 +1244,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             })
             .from(models)
             .innerJoin(providers, eq(models.providerId, providers.id))
-            .where(and(eq(providers.tokenId, row.id), sql`(${models.id} = ${modelId} OR ${models.name} = ${modelId})`, eq(models.isActive, 1)))
+            .where(and(eq(providers.tokenId, row.id), sql`(${models.id} = ${requestedModelId} OR ${models.name} = ${requestedModelId})`, eq(models.isActive, 1)))
             .limit(1);
 
             if (!results[0]) {
@@ -1219,8 +1253,8 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             modelRow = results[0];
         } else {
             // Regular Token: Try parsing "Provider/Model" (Global models only)
-            if (modelId.includes('/')) {
-                const parts = modelId.split('/');
+            if (requestedModelId.includes('/')) {
+                const parts = requestedModelId.split('/');
                 const providerName = parts[0];
                 const modelName = parts.slice(1).join('/');
                 
@@ -1271,7 +1305,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             })
             .from(models)
             .innerJoin(providers, eq(models.providerId, providers.id))
-            .where(and(eq(models.id, modelId), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
+            .where(and(eq(models.id, requestedModelId), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
             .limit(1);
             
             modelRow = results[0];
@@ -1296,17 +1330,18 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 })
                 .from(models)
                 .innerJoin(providers, eq(models.providerId, providers.id))
-                .where(and(eq(models.name, modelId), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
+                .where(and(eq(models.name, requestedModelId), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
                 .limit(1);
                 
                 modelRow = results[0];
             }
         }
 
-        if (modelRow) modelCache.set(modelId, modelRow);
+        if (modelRow) modelCache.set(requestedModelId, modelRow);
     }
 
       if (!modelRow) return sendError(res, 404, "Unknown Model Name", "invalid_request_error", inputFormat);
+      const targetModelId = row.isPrivate === 1 ? modelRow.id : modelRow.name;
 
       // Check Access using the Internal ID (modelRow.id)
       let accessibleModels: string[] = [];
@@ -1333,13 +1368,13 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       // Check Input Token Limit
       let currentInputTokens = 0;
       if (skipRequestConversion) {
-          currentInputTokens = countMessagesTokens(req.body.messages || [], modelId, modelRow.providerType);
+          currentInputTokens = countMessagesTokens(req.body.messages || [], targetModelId, modelRow.providerType);
           if (req.body.system) {
-              currentInputTokens += countContentTokens(req.body.system, modelId, modelRow.providerType);
+              currentInputTokens += countContentTokens(req.body.system, targetModelId, modelRow.providerType);
           }
       } else {
           const messages = body.messages || [];
-          currentInputTokens = countMessagesTokens(messages, modelId, modelRow.providerType);
+          currentInputTokens = countMessagesTokens(messages, targetModelId, modelRow.providerType);
       }
 
       if (row.maxTokenUsage && row.maxTokenUsage > 0) {
@@ -1349,7 +1384,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       }
 
       if (modelRow.maxInputTokens && currentInputTokens > modelRow.maxInputTokens) {
-        return sendError(res, 400, `Input context length ${currentInputTokens} exceeds the limit of ${modelRow.maxInputTokens} for model '${modelId}'.`, "invalid_request_error", inputFormat);
+        return sendError(res, 400, `Input context length ${currentInputTokens} exceeds the limit of ${modelRow.maxInputTokens} for model '${requestedModelId}'.`, "invalid_request_error", inputFormat);
       }
 
       // --- Key Pool Rotation & Retries ---
@@ -1407,7 +1442,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             let requestBody;
             if (skipRequestConversion) {
-                requestBody = { ...req.body, model: modelRow.name };
+                requestBody = { ...req.body, model: targetModelId };
                 delete requestBody.extended_ttl;
                 // Enforce max output tokens
                 if (modelRow.maxOutputTokens) {
@@ -1424,7 +1459,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                     }
                 }
                 
-                requestBody = { ...body, model: modelRow.name };
+                requestBody = { ...body, model: targetModelId };
                 delete requestBody.extended_ttl;
 
                 if (finalMaxTokens) {
@@ -1436,7 +1471,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 }
 
                 if (isAnthropic) {
-                    requestBody = convertOpenAIToAnthropic(requestBody, modelRow.name);
+                    requestBody = convertOpenAIToAnthropic(requestBody, targetModelId);
                 }
             }
 
@@ -1453,7 +1488,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
                await db.insert(errorLogs).values({
                    tokenId: row.id,
-                   modelId,
+                   modelId: requestedModelId,
                    providerId: modelRow.providerId,
                    errorType: 'provider_error',
                    errorMessage: `Key Index ${keyIndex} - Status ${proxyRes.status}: ${errorText}`,
@@ -1535,7 +1570,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                                         id: "anthropic-msg",
                                                         object: "chat.completion.chunk",
                                                         created: Math.floor(Date.now() / 1000),
-                                                        model: modelId,
+                                                        model: requestedModelId,
                                                         choices: [{ index: 0, delta: { content }, finish_reason: null }]
                                                     };
                                                 } else if (anthropicEvent.type === 'message_stop') {
@@ -1543,7 +1578,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                                         id: "anthropic-msg",
                                                         object: "chat.completion.chunk",
                                                         created: Math.floor(Date.now() / 1000),
-                                                        model: modelId,
+                                                        model: requestedModelId,
                                                         choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
                                                     };
                                                 }
@@ -1617,7 +1652,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                             const inputTokensBase = streamUsage.prompt_tokens || currentInputTokens;
                             const cacheRead = streamUsage.cache_read_input_tokens || 0;
                             const cacheWrite = streamUsage.cache_creation_input_tokens || 0;
-                            const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId, modelRow.providerType);
+                            const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, targetModelId, modelRow.providerType);
                             
                             const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
                             
@@ -1654,7 +1689,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
                             await db.insert(requestLogs).values({
                                 tokenId: row.id,
-                                modelId,
+                                modelId: requestedModelId,
                                 inputTokens: totalInputTokens,
                                 outputTokens,
                                 cacheReadTokens: cacheRead,
@@ -1679,9 +1714,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             try {
                 data = JSON.parse(responseText);
                 if (isAnthropic && inputFormat === 'openai') {
-                    data = convertAnthropicToOpenAI(data, modelId);
+                    data = convertAnthropicToOpenAI(data, requestedModelId);
                 } else if (!isAnthropic && inputFormat === 'anthropic') {
-                    data = convertOpenAIToAnthropicResponse(data, modelId);
+                    data = convertOpenAIToAnthropicResponse(data, requestedModelId);
                 }
             } catch (e) {
                 return sendError(res, 502, "Invalid JSON response from provider", "api_error", inputFormat);
@@ -1700,7 +1735,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
             const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
-            const outputTokens = usage.completion_tokens || usage.output_tokens || countTokens(outputContent, modelId, modelRow.providerType);
+            const outputTokens = usage.completion_tokens || usage.output_tokens || countTokens(outputContent, targetModelId, modelRow.providerType);
             
             const inputPrice = modelRow.inputPricePer1k || 0;
             const outputPrice = modelRow.outputPricePer1k || 0;
@@ -1735,7 +1770,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             await db.insert(requestLogs).values({
                 tokenId: row.id,
-                modelId,
+                modelId: requestedModelId,
                 inputTokens: totalInputTokens,
                 outputTokens,
                 cacheReadTokens: cacheRead,
@@ -1752,7 +1787,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             try {
                 await db.insert(errorLogs).values({
                     tokenId: row.id,
-                    modelId,
+                    modelId: requestedModelId,
                     providerId: modelRow.providerId,
                     errorType: 'server_error',
                     errorMessage: `Key Index ${keyIndex} - ${e.message || String(e)}`,

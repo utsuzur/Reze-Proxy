@@ -10,6 +10,11 @@ interface PricingData {
   outputPrice: number;
 }
 
+interface FetchedModelDraft {
+  sourceId: string;
+  alias: string;
+}
+
 const PRESETS = [
   { name: 'OpenAI', url: 'https://api.openai.com/v1', type: 'openai' },
   { name: 'Anthropic', url: 'https://api.anthropic.com', type: 'anthropic' },
@@ -24,6 +29,8 @@ const PRESETS = [
 const Offerings: React.FC = () => {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<ModelConfig[]>([]);
+  const [draftModelsByProvider, setDraftModelsByProvider] = useState<Record<string, ModelConfig[]>>({});
+  const [savingProviderId, setSavingProviderId] = useState<string | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
@@ -42,7 +49,7 @@ const Offerings: React.FC = () => {
   const [newProviderType, setNewProviderType] = useState<'openai' | 'anthropic'>('openai');
   const [newRemoveTopP, setNewRemoveTopP] = useState(false);
   const [newRotationStrategy, setNewRotationStrategy] = useState<'circular' | 'progressive'>('circular');
-  const [fetchedModels, setFetchedModels] = useState<string[]>([]);
+  const [fetchedModels, setFetchedModels] = useState<FetchedModelDraft[]>([]);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState('');
 
@@ -52,8 +59,10 @@ const Offerings: React.FC = () => {
 
   const refreshData = async () => {
     const loadedProviders = await storageService.getProviders();
+    const loadedModels = await storageService.getModels();
     setProviders(loadedProviders);
-    setModels(await storageService.getModels());
+    setModels(loadedModels);
+    setDraftModelsByProvider({});
     // Default all to expanded initially
     setExpandedProviders(new Set(loadedProviders.map(p => p.id)));
     
@@ -71,6 +80,86 @@ const Offerings: React.FC = () => {
     }
     setExpandedProviders(newSet);
   };
+
+  const normalizeLookupKey = (value: string): string => value.trim().toLowerCase();
+
+  const buildFetchedModelDrafts = (modelList: string[]): FetchedModelDraft[] => (
+      modelList.map(sourceId => ({ sourceId, alias: sourceId }))
+  );
+
+  const providerMap = new Map(providers.map(provider => [provider.id, provider]));
+  const normalizedProviderName = normalizeLookupKey(newProviderName);
+  const currentProviderModels = editingProviderId ? models.filter(m => m.providerId === editingProviderId) : [];
+  const existingCurrentModelIds = new Set(currentProviderModels.map(model => model.id));
+  const pendingFetchedModels = editingProviderId
+    ? fetchedModels.filter(model => !existingCurrentModelIds.has(model.sourceId))
+    : fetchedModels;
+
+  const otherPublicAliases = new Map<string, string[]>();
+  const currentProviderAliasCounts = new Map<string, number>();
+
+  for (const model of currentProviderModels) {
+      const aliasKey = normalizeLookupKey(model.name);
+      if (!aliasKey) continue;
+      currentProviderAliasCounts.set(aliasKey, (currentProviderAliasCounts.get(aliasKey) || 0) + 1);
+  }
+
+  for (const model of models) {
+      if (editingProviderId && model.providerId === editingProviderId) continue;
+      const provider = providerMap.get(model.providerId);
+      if (!provider || provider.tokenId) continue;
+      if (normalizeLookupKey(provider.name) !== normalizedProviderName) continue;
+
+      const aliasKey = normalizeLookupKey(model.name);
+      if (!aliasKey) continue;
+
+      const existing = otherPublicAliases.get(aliasKey) || [];
+      existing.push(`${provider.name}/${model.name}`);
+      otherPublicAliases.set(aliasKey, existing);
+  }
+
+  const existingProviderConflicts = currentProviderModels
+    .map(model => {
+        const aliasKey = normalizeLookupKey(model.name);
+        if (!aliasKey) return null;
+        if ((currentProviderAliasCounts.get(aliasKey) || 0) > 1) {
+            return `Existing model alias '${model.name}' is duplicated inside this provider. Rename it in the model table before saving this provider.`;
+        }
+        if (otherPublicAliases.has(aliasKey)) {
+            return `Existing model alias '${model.name}' would collide under provider name '${newProviderName.trim()}' with ${otherPublicAliases.get(aliasKey)?.join(', ')}.`;
+        }
+        return null;
+    })
+    .filter((value, index, list): value is string => !!value && list.indexOf(value) === index);
+
+  const pendingAliasCounts = new Map<string, number>();
+  for (const model of pendingFetchedModels) {
+      const aliasKey = normalizeLookupKey(model.alias);
+      if (!aliasKey) continue;
+      pendingAliasCounts.set(aliasKey, (pendingAliasCounts.get(aliasKey) || 0) + 1);
+  }
+
+  const pendingFetchedModelConflicts = pendingFetchedModels.map(model => {
+      const aliasKey = normalizeLookupKey(model.alias);
+      if (!aliasKey) {
+          return { sourceId: model.sourceId, reason: 'Public model ID is required.' };
+      }
+      if ((pendingAliasCounts.get(aliasKey) || 0) > 1) {
+          return { sourceId: model.sourceId, reason: `Duplicate public model ID '${model.alias}' in fetched models.` };
+      }
+      if (currentProviderAliasCounts.has(aliasKey)) {
+          return { sourceId: model.sourceId, reason: `Public model ID '${model.alias}' already exists in this provider.` };
+      }
+      if (otherPublicAliases.has(aliasKey)) {
+          return { sourceId: model.sourceId, reason: `Public model ID '${model.alias}' already exists for provider name '${newProviderName.trim()}'.` };
+      }
+      return { sourceId: model.sourceId, reason: '' };
+  });
+
+  const pendingConflictMap = new Map(pendingFetchedModelConflicts.map(conflict => [conflict.sourceId, conflict.reason]));
+  const hasBlockingProviderConflicts = existingProviderConflicts.length > 0 || pendingFetchedModelConflicts.some(model => !!model.reason);
+  const saveNeedsFetchedModels = !editingProviderId && fetchedModels.length === 0;
+  const isSaveDisabled = !newProviderName.trim() || !newProviderUrl.trim() || saveNeedsFetchedModels || hasBlockingProviderConflicts;
 
   const handleFetchModels = async () => {
     if (!newProviderUrl) return;
@@ -121,7 +210,7 @@ const Offerings: React.FC = () => {
 
         if (modelList.length === 0) throw new Error('No models found in response');
         
-        setFetchedModels(modelList);
+        setFetchedModels(buildFetchedModelDrafts(modelList));
     } catch (e: any) {
         console.error("Failed to fetch", e);
         setFetchError(e.message || "Failed to fetch models. Check URL or API Key.");
@@ -131,7 +220,7 @@ const Offerings: React.FC = () => {
   };
 
   const handleSaveProvider = async () => {
-    if (!newProviderName || !newProviderUrl) return;
+    if (!newProviderName.trim() || !newProviderUrl.trim() || hasBlockingProviderConflicts) return;
     
     if (editingProviderId) {
         // Update Existing
@@ -147,16 +236,15 @@ const Offerings: React.FC = () => {
         await storageService.updateProvider(updatedProvider);
         
         // If models were fetched during edit, we check for new ones to add
-        if (fetchedModels.length > 0) {
-             const newModelConfigs: ModelConfig[] = fetchedModels
-                .filter(mid => !models.some(m => m.id === mid && m.providerId === editingProviderId))
-                .map(modelId => {
-                    const normalized = normalizeModelId(modelId);
+        if (pendingFetchedModels.length > 0) {
+             const newModelConfigs: ModelConfig[] = pendingFetchedModels
+                .map(model => {
+                    const normalized = normalizeModelId(model.sourceId);
                     const bestMatch = pricingData.find(p => p.id.toLowerCase().includes(normalized) || normalized.includes(p.id.split('/')[1]?.toLowerCase() || ''));
                     
                     return {
-                        id: modelId,
-                        name: modelId,
+                        id: model.sourceId,
+                        name: model.alias.trim(),
                         providerId: editingProviderId,
                         maxInputTokens: 4096,
                         maxOutputTokens: 1024,
@@ -183,13 +271,13 @@ const Offerings: React.FC = () => {
             type: newProviderType
         };
 
-        const newModelConfigs: ModelConfig[] = fetchedModels.map(modelId => {
-            const normalized = normalizeModelId(modelId);
+        const newModelConfigs: ModelConfig[] = pendingFetchedModels.map(model => {
+            const normalized = normalizeModelId(model.sourceId);
             const bestMatch = pricingData.find(p => p.id.toLowerCase().includes(normalized) || normalized.includes(p.id.split('/')[1]?.toLowerCase() || ''));
             
             return {
-                id: modelId,
-                name: modelId,
+                id: model.sourceId,
+                name: model.alias.trim(),
                 providerId: newId,
                 maxInputTokens: 4096,
                 maxOutputTokens: 1024,
@@ -236,6 +324,12 @@ const Offerings: React.FC = () => {
       setFetchError('');
   };
 
+  const handleFetchedModelAliasChange = (sourceId: string, alias: string) => {
+      setFetchedModels(prev => prev.map(model => (
+          model.sourceId === sourceId ? { ...model, alias } : model
+      )));
+  };
+
   const handleDeleteProvider = async (id: string) => {
     if(window.confirm('Are you sure? This will remove all associated models.')) {
         await storageService.deleteProvider(id);
@@ -243,14 +337,24 @@ const Offerings: React.FC = () => {
     }
   };
 
-  const handleUpdateModel = async (model: ModelConfig, updates: Partial<ModelConfig>) => {
-    const updated = { ...model, ...updates };
-    await storageService.updateModel(updated);
-    setModels(prev => prev.map(m => (m.id === updated.id && m.providerId === updated.providerId) ? updated : m));
+  const getProviderModels = (providerId: string): ModelConfig[] => (
+    draftModelsByProvider[providerId] || models.filter(model => model.providerId === providerId)
+  );
+
+  const handleUpdateModel = (model: ModelConfig, updates: Partial<ModelConfig>) => {
+    setDraftModelsByProvider(prev => {
+      const providerModels = prev[model.providerId] || models.filter(m => m.providerId === model.providerId);
+      return {
+        ...prev,
+        [model.providerId]: providerModels.map(entry => (
+          entry.id === model.id ? { ...entry, ...updates, originalId: entry.originalId || model.originalId || model.id } : entry
+        ))
+      };
+    });
   };
 
   const handlePriceSelect = async (model: ModelConfig, price: PricingData) => {
-      await handleUpdateModel(model, {
+      handleUpdateModel(model, {
           pricingModelId: price.id,
           inputPricePer1k: price.inputPrice,
           outputPricePer1k: price.outputPrice
@@ -268,18 +372,13 @@ const Offerings: React.FC = () => {
 
   const handleBulkToggle = async (providerId: string, isActive: boolean) => {
     if (!window.confirm(`Are you sure you want to ${isActive ? 'enable' : 'disable'} all models for this provider?`)) return;
-    
-    const providerModels = models.filter(m => m.providerId === providerId);
+
+    const providerModels = getProviderModels(providerId);
     if (providerModels.length === 0) return;
 
-    const updatedModels = providerModels.map(m => ({ ...m, isActive }));
-    await storageService.saveModels(updatedModels);
-    
-    setModels(prev => prev.map(m => {
-        if (m.providerId === providerId) {
-            return { ...m, isActive };
-        }
-        return m;
+    setDraftModelsByProvider(prev => ({
+      ...prev,
+      [providerId]: providerModels.map(model => ({ ...model, isActive }))
     }));
   };
 
@@ -291,7 +390,7 @@ const Offerings: React.FC = () => {
     
     if (!window.confirm(`Update tokens for all models?`)) return;
 
-    const providerModels = models.filter(m => m.providerId === providerId);
+    const providerModels = getProviderModels(providerId);
     if (providerModels.length === 0) return;
 
     const updatedModels = providerModels.map(m => ({
@@ -300,18 +399,44 @@ const Offerings: React.FC = () => {
         maxOutputTokens: isNaN(maxOutput) ? m.maxOutputTokens : maxOutput
     }));
 
-    await storageService.saveModels(updatedModels);
-    
-    setModels(prev => prev.map(m => {
-        if (m.providerId === providerId) {
-             return {
-                ...m,
-                maxInputTokens: isNaN(maxInput) ? m.maxInputTokens : maxInput,
-                maxOutputTokens: isNaN(maxOutput) ? m.maxOutputTokens : maxOutput
-            };
-        }
-        return m;
+    setDraftModelsByProvider(prev => ({
+      ...prev,
+      [providerId]: updatedModels
     }));
+  };
+
+  const handleCancelProviderChanges = (providerId: string) => {
+    setDraftModelsByProvider(prev => {
+      const next = { ...prev };
+      delete next[providerId];
+      return next;
+    });
+  };
+
+  const handleSaveProviderChanges = async (providerId: string) => {
+    const draftModels = draftModelsByProvider[providerId];
+    if (!draftModels || draftModels.length === 0) return;
+
+    setSavingProviderId(providerId);
+    try {
+      const persistedModels: ModelConfig[] = [];
+      for (const model of draftModels) {
+        const result = await storageService.updateModel({ ...model, originalId: model.originalId || model.id });
+        persistedModels.push({ ...model, id: result.id || model.id, originalId: undefined });
+      }
+
+      setModels(prev => [
+        ...prev.filter(model => model.providerId !== providerId),
+        ...persistedModels
+      ]);
+      setDraftModelsByProvider(prev => {
+        const next = { ...prev };
+        delete next[providerId];
+        return next;
+      });
+    } finally {
+      setSavingProviderId(null);
+    }
   };
 
   return (
@@ -450,7 +575,10 @@ const Offerings: React.FC = () => {
                 ) : fetchError ? (
                     <span className="flex items-center gap-2 text-red-600 break-all">{fetchError}</span>
                 ) : fetchedModels.length > 0 ? (
-                    <span className="flex items-center gap-2 text-green-600"><Check className="w-4 h-4"/> Found {fetchedModels.length} models</span>
+                    <span className={`flex items-center gap-2 ${hasBlockingProviderConflicts ? 'text-amber-700' : 'text-green-600'}`}>
+                        <Check className="w-4 h-4"/>
+                        Found {fetchedModels.length} models{hasBlockingProviderConflicts ? ' with conflicts to resolve' : ''}
+                    </span>
                 ) : (
                     <span>Click 'Fetch' to {editingProviderId ? 'refresh/discover new' : 'discover'} models.</span>
                 )}
@@ -464,11 +592,58 @@ const Offerings: React.FC = () => {
              </button>
           </div>
 
+          {existingProviderConflicts.length > 0 && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 space-y-2">
+                {existingProviderConflicts.map(conflict => (
+                    <div key={conflict}>{conflict}</div>
+                ))}
+            </div>
+          )}
+
+          {fetchedModels.length > 0 && (
+            <div className="mb-6 rounded-xl border border-slate-200 overflow-hidden">
+                <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                    <h4 className="text-sm font-semibold text-slate-800">Fetched Models</h4>
+                    <p className="text-xs text-slate-500">Set the public model ID for each fetched provider model. Duplicate IDs under the same provider name are blocked.</p>
+                </div>
+                <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+                    {fetchedModels.map(model => {
+                        const isExistingInProvider = editingProviderId && existingCurrentModelIds.has(model.sourceId);
+                        const conflict = pendingConflictMap.get(model.sourceId) || '';
+
+                        return (
+                            <div key={model.sourceId} className="p-4 space-y-2">
+                                <div className="text-xs text-slate-500 font-medium">Provider Model ID</div>
+                                <div className="font-mono text-sm text-slate-700 break-all">{model.sourceId}</div>
+                                <div>
+                                    <label className="block text-xs text-slate-500 font-medium mb-1">Public Model ID</label>
+                                    <input
+                                        type="text"
+                                        value={model.alias}
+                                        disabled={!!isExistingInProvider}
+                                        onChange={(e) => handleFetchedModelAliasChange(model.sourceId, e.target.value)}
+                                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-reze-500 outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                                    />
+                                </div>
+                                {isExistingInProvider ? (
+                                    <div className="text-xs text-slate-500">Already exists in this provider. It will be skipped.</div>
+                                ) : conflict ? (
+                                    <div className="text-xs text-red-600">{conflict}</div>
+                                ) : (
+                                    <div className="text-xs text-green-600">Public model ID is unique for provider name '{newProviderName.trim() || '...'}'.</div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+          )}
+
           <div className="flex justify-end gap-3">
              <button onClick={resetForm} className="px-4 py-2 text-slate-600 hover:text-slate-900">Cancel</button>
              <button 
                 onClick={handleSaveProvider}
-                disabled={!newProviderName || !newProviderUrl || (!editingProviderId && fetchedModels.length === 0)}
+                disabled={isSaveDisabled}
                 className="px-4 py-2 bg-reze-600 text-white rounded-lg hover:bg-reze-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
              >
                 <Save className="w-4 h-4" />
@@ -523,6 +698,31 @@ const Offerings: React.FC = () => {
                 
                 {expandedProviders.has(provider.id) && (
                   <div className="p-4 md:p-6 animate-in slide-in-from-top-2 fade-in duration-200">
+                      {!!draftModelsByProvider[provider.id] && (
+                        <div className="mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                            <div>
+                                <div className="text-sm font-semibold text-amber-900">Changes Detected</div>
+                                <div className="text-xs text-amber-700">Save changes for this provider?</div>
+                            </div>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => handleCancelProviderChanges(provider.id)}
+                                    disabled={savingProviderId === provider.id}
+                                    className="px-4 py-2 text-sm text-slate-700 hover:text-slate-900 disabled:opacity-50"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={() => handleSaveProviderChanges(provider.id)}
+                                    disabled={savingProviderId === provider.id}
+                                    className="flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2 text-sm text-white hover:bg-slate-900 disabled:opacity-50"
+                                >
+                                    <Save className="w-4 h-4" />
+                                    {savingProviderId === provider.id ? 'Saving...' : 'Save'}
+                                </button>
+                            </div>
+                        </div>
+                      )}
                       <div className="flex flex-col items-center justify-center mb-8 gap-6 border-b border-slate-100 pb-6">
                           <div className="flex flex-col items-center gap-3 w-full">
                                 <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Bulk Actions</h4>
@@ -591,8 +791,17 @@ const Offerings: React.FC = () => {
                       
                       {/* Mobile Model List */}
                       <div className="md:hidden space-y-4">
-                          {models.filter(m => m.providerId === provider.id && m.name.toLowerCase().includes((modelSearchQueries[provider.id] || '').toLowerCase())).map(model => (
-                              <div key={model.id} className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-3">
+                          {getProviderModels(provider.id).filter(m => m.name.toLowerCase().includes((modelSearchQueries[provider.id] || '').toLowerCase())).map(model => (
+                              <div key={model.originalId || model.id} className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-3">
+                                  <div>
+                                      <label className="text-xs font-medium text-slate-500 block mb-1">Target Model ID</label>
+                                      <input 
+                                          type="text"
+                                          className="w-full px-2 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm focus:ring-1 focus:ring-reze-500 outline-none"
+                                          value={model.id}
+                                          onChange={(e) => handleUpdateModel(model, { id: e.target.value })}
+                                      />
+                                  </div>
                                   <div>
                                       <label className="text-xs font-medium text-slate-500 block mb-1">Public Name</label>
                                       <input 
@@ -601,7 +810,6 @@ const Offerings: React.FC = () => {
                                           value={model.name}
                                           onChange={(e) => handleUpdateModel(model, { name: e.target.value })}
                                       />
-                                      <div className="text-[10px] text-slate-400 font-mono mt-1 truncate">ID: {model.id}</div>
                                   </div>
                                   <div className="grid grid-cols-2 gap-2">
                                       <div>
@@ -664,18 +872,23 @@ const Offerings: React.FC = () => {
                                   </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
-                                  {models.filter(m => m.providerId === provider.id && m.name.toLowerCase().includes((modelSearchQueries[provider.id] || '').toLowerCase())).map(model => (
-                                      <tr key={model.id} className="hover:bg-slate-50/50">
+                                  {getProviderModels(provider.id).filter(m => m.name.toLowerCase().includes((modelSearchQueries[provider.id] || '').toLowerCase())).map(model => (
+                                      <tr key={model.originalId || model.id} className="hover:bg-slate-50/50">
                                           <td className="px-4 py-3">
+                                              <label className="block text-[10px] text-slate-500 font-medium mb-1">Target Model ID</label>
+                                              <input 
+                                                  type="text"
+                                                  className="w-full px-2 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm focus:ring-1 focus:ring-reze-500 outline-none"
+                                                  value={model.id}
+                                                  onChange={(e) => handleUpdateModel(model, { id: e.target.value })}
+                                              />
+                                              <label className="block text-[10px] text-slate-500 font-medium mt-2 mb-1">Public Name</label>
                                               <input 
                                                   type="text"
                                                   className="w-full px-2 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm focus:ring-1 focus:ring-reze-500 outline-none"
                                                   value={model.name}
                                                   onChange={(e) => handleUpdateModel(model, { name: e.target.value })}
                                               />
-                                              <div className="text-xs text-slate-400 font-mono mt-1" title="Provider Model ID">
-                                                  ID: {model.id}
-                                              </div>
                                           </td>
                                           <td className="px-4 py-3">
                                               <input 
@@ -774,7 +987,7 @@ const Offerings: React.FC = () => {
                               <button 
                                   key={price.id}
                                   onClick={() => {
-                                      const model = models.find(m => m.id === activePriceSearchModel.modelId && m.providerId === activePriceSearchModel.providerId);
+                                      const model = getProviderModels(activePriceSearchModel.providerId).find(m => m.id === activePriceSearchModel.modelId && m.providerId === activePriceSearchModel.providerId);
                                       if (model) handlePriceSelect(model, price);
                                   }}
                                   className="w-full text-left p-3 rounded-xl hover:bg-reze-50 group transition-colors flex justify-between items-center"

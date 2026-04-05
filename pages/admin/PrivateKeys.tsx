@@ -150,8 +150,6 @@ const PrivateKeys: React.FC = () => {
   };
 
   const handleSaveProvider = async (tokenId: string) => {
-    const token = tokens.find(t => t.id === tokenId);
-    const tokenName = token?.name || tokenId;
     const providerId = `p_priv_${Date.now()}`;
     const provider: Provider = {
         id: providerId,
@@ -165,7 +163,7 @@ const PrivateKeys: React.FC = () => {
     await storageService.saveProvider(provider);
     
     const newModels: ModelConfig[] = fetchedModels.map(mid => ({
-        id: `${tokenName}-${mid}`,
+        id: mid,
         name: mid,
         providerId: providerId,
         maxInputTokens: 4096,
