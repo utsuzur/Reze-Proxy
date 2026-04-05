@@ -1399,7 +1399,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     }
 
       if (!modelRow) return sendError(res, 404, "Unknown Model Name", "invalid_request_error", inputFormat);
-      const targetModelId = row.isPrivate === 1 ? modelRow.id : modelRow.name;
+      const targetModelId = modelRow.id;
 
       // Check Access using the Internal ID (modelRow.id)
       let accessibleModels: string[] = [];
