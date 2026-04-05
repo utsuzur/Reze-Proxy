@@ -995,6 +995,64 @@ app.post('/api/my-token/details', async (req, res) => {
     }
 });
 
+app.post('/api/my-token/catalog', async (req, res) => {
+    const { token: tokenStr } = req.body;
+    if (!tokenStr) return res.status(400).json({ error: "Token is required" });
+
+    try {
+        const tokenRows = await db.select().from(tokens).where(eq(tokens.token, tokenStr)).limit(1);
+        const row = tokenRows[0];
+        if (!row || row.isActive === 0) return res.status(404).json({ error: "Invalid token" });
+
+        if (row.isPrivate !== 1) {
+            return res.json({ isPrivate: false, providers: [], models: [] });
+        }
+
+        const privateRows = await db.select({
+            providerId: providers.id,
+            providerName: providers.name,
+            providerType: providers.type,
+            modelId: models.id,
+            modelName: models.name,
+            maxInputTokens: models.maxInputTokens,
+            maxOutputTokens: models.maxOutputTokens,
+            pricingModelId: models.pricingModelId,
+            inputPricePer1k: models.inputPricePer1k,
+            outputPricePer1k: models.outputPricePer1k
+        })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(and(eq(providers.tokenId, row.id), eq(models.isActive, 1)))
+        .orderBy(providers.name, models.name);
+
+        const privateProviders = Array.from(new Map(privateRows.map((entry) => [
+            entry.providerId,
+            {
+                id: entry.providerId,
+                name: entry.providerName,
+                type: entry.providerType,
+                isPrivate: true
+            }
+        ])).values());
+
+        const privateModels = privateRows.map((entry) => ({
+            id: entry.modelId,
+            providerId: entry.providerId,
+            name: entry.modelName,
+            maxInputTokens: entry.maxInputTokens,
+            maxOutputTokens: entry.maxOutputTokens,
+            pricingModelId: entry.pricingModelId,
+            inputPricePer1k: entry.inputPricePer1k,
+            outputPricePer1k: entry.outputPricePer1k,
+            isActive: true
+        }));
+
+        return res.json({ isPrivate: true, providers: privateProviders, models: privateModels });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.put('/api/my-token/name', async (req, res) => {
     const { token: tokenStr, name } = req.body;
     if (!tokenStr || !name) return res.status(400).json({ error: "Token and name are required" });

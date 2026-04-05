@@ -2,6 +2,7 @@ import React, { Suspense, useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Home from './pages/Home';
+import UserToken from './pages/UserToken';
 import Login from './pages/admin/Login';
 
 // Lazy Load Admin Pages
@@ -67,6 +68,12 @@ const App: React.FC = () => {
         <Route path="/" element={
             <Layout>
                 <Home />
+            </Layout>
+        } />
+
+        <Route path="/user-token" element={
+            <Layout>
+                <UserToken />
             </Layout>
         } />
 

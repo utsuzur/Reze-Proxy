@@ -26,13 +26,17 @@ const ManageTokens: React.FC = () => {
   const [isActive, setIsActive] = useState(true);
   const [regeneratedToken, setRegeneratedToken] = useState<string | null>(null);
 
+  const reloadTokenData = async () => {
+    const tokenList = await storageService.getTokens();
+    setTokens(tokenList.filter(t => !t.isPrivate));
+  };
+
   useEffect(() => {
     const loadData = async () => {
         setIsLoading(true);
         setError(null);
         try {
-            const tokenList = await storageService.getTokens();
-            setTokens(tokenList.filter(t => !t.isPrivate));
+            await reloadTokenData();
             const models = await storageService.getModels();
             setAvailableModels(models.filter(m => m.isActive));
         } catch (err: any) {
@@ -74,7 +78,7 @@ const ManageTokens: React.FC = () => {
         tier: tier,
         creditBalance: creditBalance !== '' ? Number(creditBalance) : 0
       });
-      setTokens(await storageService.getTokens());
+      await reloadTokenData();
       resetForm();
     } else {
       // Create new
@@ -101,7 +105,7 @@ const ManageTokens: React.FC = () => {
       };
 
       await storageService.saveToken(newToken);
-      setTokens(await storageService.getTokens());
+      await reloadTokenData();
       setGeneratedToken(tokenStr);
     }
   };
@@ -145,7 +149,7 @@ const ManageTokens: React.FC = () => {
   const handleDeleteToken = async (id: string) => {
     if (window.confirm('Revoke this token permanently?')) {
         await storageService.deleteToken(id);
-        setTokens(await storageService.getTokens());
+        await reloadTokenData();
     }
   };
 
@@ -154,7 +158,7 @@ const ManageTokens: React.FC = () => {
         id: token.id,
         isActive: !token.isActive
     });
-    setTokens(await storageService.getTokens());
+    await reloadTokenData();
   };
 
   const copyToClipboard = (text: string) => {

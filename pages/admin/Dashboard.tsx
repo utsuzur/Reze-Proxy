@@ -60,7 +60,7 @@ const Dashboard: React.FC = () => {
         {/* Providers Card */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex items-center gap-4">
           <div className="p-3 bg-blue-50 text-blue-600 rounded-lg">
-            <Server className="w-8 h-8" />
+            <Server className="w-8 h-8 theme-icon" />
           </div>
           <div>
             <p className="text-sm text-slate-500 font-medium">Total Providers</p>
@@ -71,7 +71,7 @@ const Dashboard: React.FC = () => {
         {/* Models Card */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex items-center gap-4">
           <div className="p-3 bg-purple-50 text-purple-600 rounded-lg">
-            <Cpu className="w-8 h-8" />
+            <Cpu className="w-8 h-8 theme-icon" />
           </div>
           <div>
             <p className="text-sm text-slate-500 font-medium">Total Models</p>
@@ -85,7 +85,7 @@ const Dashboard: React.FC = () => {
         {/* Tokens Card */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex items-center gap-4">
           <div className="p-3 bg-amber-50 text-amber-600 rounded-lg">
-            <Key className="w-8 h-8" />
+            <Key className="w-8 h-8 theme-icon" />
           </div>
           <div>
             <p className="text-sm text-slate-500 font-medium">Issued Tokens</p>
@@ -96,7 +96,7 @@ const Dashboard: React.FC = () => {
         {/* System Status - Mock for now */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex items-center gap-4">
           <div className="p-3 bg-green-50 text-green-600 rounded-lg">
-            <Activity className="w-8 h-8" />
+            <Activity className="w-8 h-8 theme-icon" />
           </div>
           <div>
             <p className="text-sm text-slate-500 font-medium">System Status</p>
