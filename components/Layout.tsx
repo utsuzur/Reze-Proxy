@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Shield, Home, Server, Key, LayoutDashboard, Menu, X, AlertTriangle } from 'lucide-react';
+import { Shield, Home, Server, Key, LayoutDashboard, Menu, X, AlertTriangle, Moon, Sun } from 'lucide-react';
+import { getStoredTheme, setStoredTheme, type ThemeMode } from '../services/theme';
 
 interface LayoutProps {
   children?: React.ReactNode;
@@ -26,8 +27,15 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
   const navigate = useNavigate();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [theme, setTheme] = useState<ThemeMode>(() => getStoredTheme());
 
   const isActive = (path: string) => location.pathname === path;
+
+  const toggleTheme = () => {
+    const nextTheme: ThemeMode = theme === 'light' ? 'dark' : 'light';
+    setTheme(nextTheme);
+    setStoredTheme(nextTheme);
+  };
 
   const adminPost = async (url: string) => {
     const csrf = getCookie('reze_csrf');
@@ -62,20 +70,29 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans selection:bg-reze-200">
+    <div className={`min-h-screen text-slate-800 font-sans selection:bg-reze-200 ${isAdmin ? 'bg-gradient-to-br from-slate-100 via-white to-reze-100/50' : 'bg-slate-50'}`}>
+      <button
+        onClick={toggleTheme}
+        className="fixed bottom-4 right-4 z-[60] inline-flex items-center gap-2 px-4 py-3 rounded-2xl bg-white border border-slate-200 text-slate-700 shadow-lg hover:border-reze-300 hover:text-reze-600 transition-colors"
+        title="Toggle dark mode"
+      >
+        {theme === 'light' ? <Moon className="w-4 h-4 theme-icon" /> : <Sun className="w-4 h-4 theme-icon" />}
+        <span className="text-sm font-medium">{theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
+      </button>
+
       {isAdmin && (
         <>
           {/* Mobile Header */}
           <div className="md:hidden fixed top-0 left-0 right-0 bg-white border-b border-reze-100 px-4 py-3 flex items-center justify-between z-40 shadow-sm">
             <div className="flex items-center gap-2 font-bold text-reze-600">
-              <Shield className="w-5 h-5" />
+              <Shield className="w-5 h-5 theme-icon" />
               <span>Reze Shrine</span>
             </div>
             <button
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
               className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg focus:outline-none"
             >
-              {isMobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+              {isMobileMenuOpen ? <X className="w-6 h-6 theme-icon" /> : <Menu className="w-6 h-6 theme-icon" />}
             </button>
           </div>
 
@@ -93,7 +110,7 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
           >
             <div className="p-6 border-b border-reze-50">
               <h1 className="text-xl font-bold text-reze-600 flex items-center gap-2">
-                <Shield className="w-6 h-6" />
+                <Shield className="w-6 h-6 theme-icon" />
                 Reze Shrine
               </h1>
               <p className="text-xs text-slate-400 mt-1">Admin Control Panel</p>
@@ -105,7 +122,7 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
                 onClick={() => setIsMobileMenuOpen(false)}
                 className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/shrine') ? 'bg-reze-50 text-reze-700 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
               >
-                <LayoutDashboard className="w-5 h-5" />
+                <LayoutDashboard className="w-5 h-5 theme-icon" />
                 Dashboard
               </Link>
               <Link
@@ -113,7 +130,7 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
                 onClick={() => setIsMobileMenuOpen(false)}
                 className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/shrine/offerings') ? 'bg-reze-50 text-reze-700 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
               >
-                <Server className="w-5 h-5" />
+                <Server className="w-5 h-5 theme-icon" />
                 Offerings (Models)
               </Link>
               <Link
@@ -121,15 +138,23 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
                 onClick={() => setIsMobileMenuOpen(false)}
                 className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/shrine/manage-tokens') ? 'bg-reze-50 text-reze-700 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
               >
-                <Key className="w-5 h-5" />
-                User Tokens
+                <Key className="w-5 h-5 theme-icon" />
+                Standard Tokens
+              </Link>
+              <Link
+                to="/shrine/private-keys"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/shrine/private-keys') ? 'bg-reze-50 text-reze-700 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+              >
+                <Shield className="w-5 h-5 theme-icon" />
+                Private Keys
               </Link>
               <Link
                 to="/shrine/errors"
                 onClick={() => setIsMobileMenuOpen(false)}
                 className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/shrine/errors') ? 'bg-reze-50 text-reze-700 font-medium' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
               >
-                <AlertTriangle className="w-5 h-5" />
+                <AlertTriangle className="w-5 h-5 theme-icon" />
                 Error Logs
               </Link>
             </div>
@@ -151,7 +176,7 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
               </button>
 
               <Link to="/" className="mt-2 flex items-center gap-2 text-sm text-slate-500 hover:text-reze-600 transition-colors">
-                <Home className="w-4 h-4" />
+                <Home className="w-4 h-4 theme-icon" />
                 Return to Public
               </Link>
             </div>
@@ -160,7 +185,7 @@ const Layout: React.FC<LayoutProps> = ({ children, isAdmin = false }) => {
       )}
 
       <main className={`${isAdmin ? 'md:ml-64 pt-16 md:pt-0' : ''} min-h-screen transition-all duration-300`}>
-        <div className="container mx-auto px-4 py-6 md:px-8 md:py-8 max-w-7xl">{children}</div>
+        <div className={isAdmin ? 'container mx-auto px-4 py-6 md:px-8 md:py-8 max-w-7xl' : ''}>{children}</div>
       </main>
     </div>
   );

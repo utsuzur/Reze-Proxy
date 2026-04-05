@@ -16,6 +16,7 @@ export const pgProviders = pgTable('providers', {
   type: text('type').default('openai_compatible'),
   removeTopP: integer('removetopp').default(0),
   rotationStrategy: text('rotation_strategy').default('circular'),
+  tokenId: text('tokenid'), // For private providers
   lastUsedKeyIndex: integer('lastusedkeyindex').default(0),
   createdAt: timestamp('createdAt', { mode: 'string' }).defaultNow(),
   updatedAt: timestamp('updatedAt', { mode: 'string' }).defaultNow(),
@@ -59,6 +60,7 @@ export const pgTokens = pgTable('tokens', {
   lastRequestMinute: text('lastrequestminute'),
   tokenType: text('tokentype').default('rpd'),
   tier: text('tier').default('standard'),
+  isPrivate: integer('isprivate').default(0),
   creditBalance: real('creditbalance').default(0),
   updatedAt: timestamp('updatedAt', { mode: 'string' }).defaultNow(),
 }, (table) => ({
@@ -136,6 +138,7 @@ export const sqliteProviders = sqliteTable('providers', {
   type: sqliteText('type').default('openai_compatible'),
   removeTopP: sqliteInteger('removeTopP').default(0),
   rotationStrategy: sqliteText('rotationStrategy').default('circular'),
+  tokenId: sqliteText('tokenId'),
   lastUsedKeyIndex: sqliteInteger('lastUsedKeyIndex').default(0),
   createdAt: sqliteText('createdAt'),
   updatedAt: sqliteText('updatedAt'),
@@ -179,6 +182,7 @@ export const sqliteTokens = sqliteTable('tokens', {
   lastRequestMinute: sqliteText('lastRequestMinute'),
   tokenType: sqliteText('tokenType').default('rpd'),
   tier: sqliteText('tier').default('standard'),
+  isPrivate: sqliteInteger('isPrivate').default(0),
   creditBalance: sqliteReal('creditBalance').default(0),
   updatedAt: sqliteText('updatedAt'),
 });

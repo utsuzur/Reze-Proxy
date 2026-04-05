@@ -1,5 +1,6 @@
 export interface ModelConfig {
   id: string;
+  originalId?: string;
   name: string; // The model ID from the provider (e.g., gpt-4)
   providerId: string;
   maxInputTokens: number;
@@ -18,6 +19,7 @@ export interface Provider {
   type?: 'openai' | 'anthropic';
   removeTopP?: boolean;
   rotationStrategy?: 'circular' | 'progressive';
+  tokenId?: string;
   lastUsedKeyIndex?: number;
 }
 
@@ -37,6 +39,7 @@ export interface UserToken {
   maxTokenUsage?: number;
   maxCostUsage?: number; // Budget in USD
   isActive: boolean;
+  isPrivate?: boolean;
   tokenType?: 'rpd' | 'credits';
   tier?: 'standard' | 'plus';
   creditBalance?: number;

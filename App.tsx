@@ -2,12 +2,14 @@ import React, { Suspense, useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Home from './pages/Home';
+import UserToken from './pages/UserToken';
 import Login from './pages/admin/Login';
 
 // Lazy Load Admin Pages
 const Dashboard = React.lazy(() => import('./pages/admin/Dashboard'));
 const Offerings = React.lazy(() => import('./pages/admin/Offerings'));
 const ManageTokens = React.lazy(() => import('./pages/admin/ManageTokens'));
+const PrivateKeys = React.lazy(() => import('./pages/admin/PrivateKeys'));
 const ErrorLogs = React.lazy(() => import('./pages/admin/ErrorLogs'));
 
 // Loading Component
@@ -69,6 +71,12 @@ const App: React.FC = () => {
             </Layout>
         } />
 
+        <Route path="/user-token" element={
+            <Layout>
+                <UserToken />
+            </Layout>
+        } />
+
         {/* Admin Login */}
         <Route path="/shrine/login" element={<Login />} />
         
@@ -88,6 +96,12 @@ const App: React.FC = () => {
         <Route path="/shrine/manage-tokens" element={
           <ProtectedRoute>
             <ManageTokens />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/shrine/private-keys" element={
+          <ProtectedRoute>
+            <PrivateKeys />
           </ProtectedRoute>
         } />
 

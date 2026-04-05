@@ -518,7 +518,7 @@ app.get('/api/public/providers', async (req, res) => {
     })
     .from(providers)
     .innerJoin(models, eq(models.providerId, providers.id))
-    .where(eq(models.isActive, 1))
+    .where(and(eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
     .groupBy(providers.id)
     .orderBy(providers.name);
     
@@ -544,7 +544,7 @@ app.get('/api/public/models', async (req, res) => {
     })
     .from(models)
     .innerJoin(providers, eq(models.providerId, providers.id))
-    .where(eq(models.isActive, 1));
+    .where(and(eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`));
 
     const formatted = rows.map((r) => ({
       ...r,
@@ -640,6 +640,8 @@ app.get('/api/providers', requireAdmin, async (req, res) => {
         }
         return {
             ...r,
+            removeTopP: !!r.removeTopP,
+            tokenId: r.tokenId,
             apiKey: displayKey
         };
     });
@@ -650,7 +652,7 @@ app.get('/api/providers', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/providers', requireAdmin, async (req, res) => {
-  const { id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy } = req.body;
+  const { id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy, tokenId } = req.body;
   try {
     const nowIso = new Date().toISOString();
     await db.insert(providers).values({
@@ -661,29 +663,30 @@ app.post('/api/providers', requireAdmin, async (req, res) => {
       type,
       removeTopP: removeTopP ? 1 : 0,
       rotationStrategy: rotationStrategy || 'circular',
+      tokenId,
       createdAt: nowIso,
       updatedAt: nowIso
     });
     modelCache.flushAll(); 
     await updateSyncState();
-    res.json({ id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy });
+    res.json({ id, name, baseUrl, apiKey, type, removeTopP, rotationStrategy, tokenId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.put('/api/providers', requireAdmin, async (req, res) => {
-  const { id, name, baseUrl, apiKey, removeTopP, rotationStrategy } = req.body;
+  const { id, name, baseUrl, apiKey, removeTopP, rotationStrategy, tokenId } = req.body;
   const nowIso = new Date().toISOString();
   
   try {
     if (apiKey && !apiKey.includes('...')) {
       await db.update(providers)
-        .set({ name, baseUrl, apiKey, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', updatedAt: nowIso })
+        .set({ name, baseUrl, apiKey, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', tokenId, updatedAt: nowIso })
         .where(eq(providers.id, id));
     } else {
       await db.update(providers)
-        .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', updatedAt: nowIso })
+        .set({ name, baseUrl, removeTopP: removeTopP ? 1 : 0, rotationStrategy: rotationStrategy || 'circular', tokenId, updatedAt: nowIso })
         .where(eq(providers.id, id));
     }
     modelCache.flushAll(); // Clear model cache when a provider is updated
@@ -769,8 +772,42 @@ app.put('/api/models', requireAdmin, async (req, res) => {
     const m = req.body;
     const nowIso = new Date().toISOString();
     try {
+        const lookupId = typeof m.originalId === 'string' && m.originalId.trim() ? m.originalId.trim() : m.id;
+        const existingRows = await db.select({
+            id: models.id,
+            name: models.name,
+            providerTokenId: providers.tokenId
+        })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(and(eq(models.id, lookupId), eq(models.providerId, m.providerId)))
+        .limit(1);
+
+        const existing = existingRows[0];
+        if (!existing) {
+            return res.status(404).json({ error: 'Model not found' });
+        }
+
+        const isPrivateModel = !!existing.providerTokenId;
+        const requestedId = typeof m.id === 'string' && m.id.trim() ? m.id.trim() : existing.id;
+        const nextId = isPrivateModel && existing.id !== existing.name && requestedId === existing.id
+            ? existing.name
+            : requestedId;
+
+        if (nextId !== lookupId) {
+            const conflictingRows = await db.select({ id: models.id })
+                .from(models)
+                .where(and(eq(models.id, nextId), eq(models.providerId, m.providerId)))
+                .limit(1);
+
+            if (conflictingRows[0]) {
+                return res.status(409).json({ error: 'Model ID already exists for this provider' });
+            }
+        }
+
         await db.update(models)
             .set({
+                id: nextId,
                 name: m.name,
                 maxInputTokens: m.maxInputTokens,
                 maxOutputTokens: m.maxOutputTokens,
@@ -780,10 +817,10 @@ app.put('/api/models', requireAdmin, async (req, res) => {
                 isActive: m.isActive ? 1 : 0,
                 updatedAt: nowIso
             })
-            .where(and(eq(models.id, m.id), eq(models.providerId, m.providerId)));
+            .where(and(eq(models.id, lookupId), eq(models.providerId, m.providerId)));
         modelCache.flushAll(); 
         await updateSyncState();
-        res.json({ updated: 1 });
+        res.json({ updated: 1, id: nextId });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
@@ -810,6 +847,7 @@ app.get('/api/tokens', requireAdmin, async (req, res) => {
         return {
             ...r,
             isActive: r.isActive === 1,
+            isPrivate: r.isPrivate === 1,
             usageCount: r.usageCount || 0,
             inputTokens: r.inputTokens || 0,
             outputTokens: r.outputTokens || 0,
@@ -825,7 +863,7 @@ app.get('/api/tokens', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/tokens', requireAdmin, async (req, res) => {
-  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
+  const { id, name, token, createdAt, expiresAt, accessibleModelIds, usageCount, isActive, isPrivate, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
   try {
     await db.insert(tokens).values({
@@ -837,6 +875,7 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
       accessibleModelIds: JSON.stringify(accessibleModelIds),
       usageCount: usageCount || 0,
       isActive: isActive !== undefined ? (isActive ? 1 : 0) : 1,
+      isPrivate: isPrivate ? 1 : 0,
       maxRequestsPerDay,
       maxRequestsPerMinute,
       maxTokenUsage,
@@ -854,24 +893,23 @@ app.post('/api/tokens', requireAdmin, async (req, res) => {
 });
 
 app.put('/api/tokens', requireAdmin, async (req, res) => {
-  const { id, name, token, expiresAt, accessibleModelIds, isActive, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
+  const { id, name, token, expiresAt, accessibleModelIds, isActive, isPrivate, maxRequestsPerDay, maxRequestsPerMinute, maxTokenUsage, maxCostUsage, tokenType, tier, creditBalance } = req.body;
   const nowIso = new Date().toISOString();
-  
+
   try {
-    const updateData: any = {
-      name,
-      expiresAt,
-      accessibleModelIds: JSON.stringify(accessibleModelIds),
-      isActive: isActive ? 1 : 0,
-      maxRequestsPerDay,
-      maxRequestsPerMinute,
-      maxTokenUsage,
-      maxCostUsage,
-      tokenType,
-      tier,
-      creditBalance,
-      updatedAt: nowIso
-    };
+    const updateData: any = { updatedAt: nowIso };
+    if (name !== undefined) updateData.name = name;
+    if (expiresAt !== undefined) updateData.expiresAt = expiresAt;
+    if (accessibleModelIds !== undefined) updateData.accessibleModelIds = JSON.stringify(accessibleModelIds);
+    if (isActive !== undefined) updateData.isActive = isActive ? 1 : 0;
+    if (isPrivate !== undefined) updateData.isPrivate = isPrivate ? 1 : 0;
+    if (maxRequestsPerDay !== undefined) updateData.maxRequestsPerDay = maxRequestsPerDay;
+    if (maxRequestsPerMinute !== undefined) updateData.maxRequestsPerMinute = maxRequestsPerMinute;
+    if (maxTokenUsage !== undefined) updateData.maxTokenUsage = maxTokenUsage;
+    if (maxCostUsage !== undefined) updateData.maxCostUsage = maxCostUsage;
+    if (tokenType !== undefined) updateData.tokenType = tokenType;
+    if (tier !== undefined) updateData.tier = tier;
+    if (creditBalance !== undefined) updateData.creditBalance = creditBalance;
     if (token) updateData.token = token;
 
     await db.update(tokens).set(updateData).where(eq(tokens.id, id));
@@ -957,6 +995,64 @@ app.post('/api/my-token/details', async (req, res) => {
     }
 });
 
+app.post('/api/my-token/catalog', async (req, res) => {
+    const { token: tokenStr } = req.body;
+    if (!tokenStr) return res.status(400).json({ error: "Token is required" });
+
+    try {
+        const tokenRows = await db.select().from(tokens).where(eq(tokens.token, tokenStr)).limit(1);
+        const row = tokenRows[0];
+        if (!row || row.isActive === 0) return res.status(404).json({ error: "Invalid token" });
+
+        if (row.isPrivate !== 1) {
+            return res.json({ isPrivate: false, providers: [], models: [] });
+        }
+
+        const privateRows = await db.select({
+            providerId: providers.id,
+            providerName: providers.name,
+            providerType: providers.type,
+            modelId: models.id,
+            modelName: models.name,
+            maxInputTokens: models.maxInputTokens,
+            maxOutputTokens: models.maxOutputTokens,
+            pricingModelId: models.pricingModelId,
+            inputPricePer1k: models.inputPricePer1k,
+            outputPricePer1k: models.outputPricePer1k
+        })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(and(eq(providers.tokenId, row.id), eq(models.isActive, 1)))
+        .orderBy(providers.name, models.name);
+
+        const privateProviders = Array.from(new Map(privateRows.map((entry) => [
+            entry.providerId,
+            {
+                id: entry.providerId,
+                name: entry.providerName,
+                type: entry.providerType,
+                isPrivate: true
+            }
+        ])).values());
+
+        const privateModels = privateRows.map((entry) => ({
+            id: entry.modelId,
+            providerId: entry.providerId,
+            name: entry.modelName,
+            maxInputTokens: entry.maxInputTokens,
+            maxOutputTokens: entry.maxOutputTokens,
+            pricingModelId: entry.pricingModelId,
+            inputPricePer1k: entry.inputPricePer1k,
+            outputPricePer1k: entry.outputPricePer1k,
+            isActive: true
+        }));
+
+        return res.json({ isPrivate: true, providers: privateProviders, models: privateModels });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.put('/api/my-token/name', async (req, res) => {
     const { token: tokenStr, name } = req.body;
     if (!tokenStr || !name) return res.status(400).json({ error: "Token and name are required" });
@@ -999,21 +1095,54 @@ import { countTokens, countMessagesTokens, countContentTokens } from './tokenSer
 
 app.get('/v1/models', async (req, res) => {
   try {
-    const rows = await db.select({
-      name: models.name,
-      providerName: providers.name
-    })
-    .from(models)
-    .innerJoin(providers, eq(models.providerId, providers.id))
-    .where(eq(models.isActive, 1));
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Missing Authorization Header" });
+    const tokenStr = authHeader.split(' ')[1];
+    
+    const tokenRows = await db.select().from(tokens).where(eq(tokens.token, tokenStr)).limit(1);
+    if (tokenRows.length === 0 || tokenRows[0].isActive === 0) {
+      return res.status(401).json({ error: "Invalid or inactive token" });
+    }
+    const tokenRow = tokenRows[0];
 
-    const formatted = rows.map(r => ({
-        id: `${r.providerName}/${r.name}`, // Expose provider/model
-        object: "model",
-        created: Math.floor(Date.now() / 1000),
-        owned_by: "reze-proxy"
-    }));
-    res.json({ object: "list", data: formatted });
+    if (tokenRow.isPrivate === 1) {
+        // Private Token: Only show its dedicated models
+        console.log('[/v1/models] private token id:', tokenRow.id, 'isPrivate:', tokenRow.isPrivate);
+        const rows = await db.select({
+          id: models.id,
+          name: models.name
+        })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(and(eq(providers.tokenId, tokenRow.id), eq(models.isActive, 1)));
+        console.log('[/v1/models] private rows found:', rows.length, JSON.stringify(rows));
+
+        const formatted = rows.map(r => ({
+            id: r.name,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "reze-proxy-private",
+            name: r.name
+        }));
+        return res.json({ object: "list", data: formatted });
+    } else {
+        // Regular Token: Show global models
+        const rows = await db.select({
+          name: models.name,
+          providerName: providers.name
+        })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(and(sql`${providers.tokenId} IS NULL`, eq(models.isActive, 1)));
+
+        const formatted = rows.map(r => ({
+            id: `${r.providerName}/${r.name}`,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "reze-proxy"
+        }));
+        return res.json({ object: "list", data: formatted });
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1145,19 +1274,16 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
     }).where(eq(tokens.id, row.id));
     await updateSyncState();
 
-    const modelId = req.body.model;
-    if (!modelId) return sendError(res, 400, "Model is required", "invalid_request_error", inputFormat);
+    const requestedModelId = req.body.model;
+    if (!requestedModelId) return sendError(res, 400, "Model is required", "invalid_request_error", inputFormat);
 
     // 2. Get Model (Cache -> DB)
-    let modelRow: any = modelCache.get(modelId);
+    let modelRow: any = modelCache.get(requestedModelId);
     if (!modelRow) {
-        // Try parsing "Provider/Model"
-        if (modelId.includes('/')) {
-            const parts = modelId.split('/');
-            const providerName = parts[0];
-            const modelName = parts.slice(1).join('/');
-            
-            const results = await db.select({
+        let results;
+        if (row.isPrivate === 1) {
+            // Private Token: match by model name OR full ID
+            results = await db.select({
                 id: models.id,
                 providerId: models.providerId,
                 name: models.name,
@@ -1176,15 +1302,49 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             })
             .from(models)
             .innerJoin(providers, eq(models.providerId, providers.id))
-            .where(and(eq(providers.name, providerName), eq(models.name, modelName), eq(models.isActive, 1)))
+            .where(and(eq(providers.tokenId, row.id), sql`(${models.id} = ${requestedModelId} OR ${models.name} = ${requestedModelId})`, eq(models.isActive, 1)))
             .limit(1);
-            
+
+            if (!results[0]) {
+                return sendError(res, 403, "Private tokens only have access to their designated private model pool.", "invalid_request_error", inputFormat);
+            }
             modelRow = results[0];
+        } else {
+            // Regular Token: Try parsing "Provider/Model" (Global models only)
+            if (requestedModelId.includes('/')) {
+                const parts = requestedModelId.split('/');
+                const providerName = parts[0];
+                const modelName = parts.slice(1).join('/');
+                
+                results = await db.select({
+                    id: models.id,
+                    providerId: models.providerId,
+                    name: models.name,
+                    maxInputTokens: models.maxInputTokens,
+                    maxOutputTokens: models.maxOutputTokens,
+                    pricingModelId: models.pricingModelId,
+                    inputPricePer1k: models.inputPricePer1k,
+                    outputPricePer1k: models.outputPricePer1k,
+                    isActive: models.isActive,
+                    baseUrl: providers.baseUrl,
+                    providerKey: providers.apiKey,
+                    providerType: providers.type,
+                    removeTopP: providers.removeTopP,
+                    rotationStrategy: providers.rotationStrategy,
+                    lastUsedKeyIndex: providers.lastUsedKeyIndex
+                })
+                .from(models)
+                .innerJoin(providers, eq(models.providerId, providers.id))
+                .where(and(eq(providers.name, providerName), eq(models.name, modelName), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
+                .limit(1);
+                
+                modelRow = results[0];
+            }
         }
 
-        // Fallback: Try searching by model name directly (legacy/ambiguous mode)
-        if (!modelRow) {
-            const results = await db.select({
+        // Fallback: Try searching by model name or direct ID (Global models only)
+        if (!modelRow && row.isPrivate !== 1) {
+            let results = await db.select({
                 id: models.id,
                 providerId: models.providerId,
                 name: models.name,
@@ -1203,16 +1363,43 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             })
             .from(models)
             .innerJoin(providers, eq(models.providerId, providers.id))
-            .where(and(eq(models.name, modelId), eq(models.isActive, 1)))
+            .where(and(eq(models.id, requestedModelId), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
             .limit(1);
             
             modelRow = results[0];
+
+            if (!modelRow) {
+                results = await db.select({
+                    id: models.id,
+                    providerId: models.providerId,
+                    name: models.name,
+                    maxInputTokens: models.maxInputTokens,
+                    maxOutputTokens: models.maxOutputTokens,
+                    pricingModelId: models.pricingModelId,
+                    inputPricePer1k: models.inputPricePer1k,
+                    outputPricePer1k: models.outputPricePer1k,
+                    isActive: models.isActive,
+                    baseUrl: providers.baseUrl,
+                    providerKey: providers.apiKey,
+                    providerType: providers.type,
+                    removeTopP: providers.removeTopP,
+                    rotationStrategy: providers.rotationStrategy,
+                    lastUsedKeyIndex: providers.lastUsedKeyIndex
+                })
+                .from(models)
+                .innerJoin(providers, eq(models.providerId, providers.id))
+                .where(and(eq(models.name, requestedModelId), eq(models.isActive, 1), sql`${providers.tokenId} IS NULL`))
+                .limit(1);
+                
+                modelRow = results[0];
+            }
         }
 
-        if (modelRow) modelCache.set(modelId, modelRow);
+        if (modelRow) modelCache.set(requestedModelId, modelRow);
     }
 
       if (!modelRow) return sendError(res, 404, "Unknown Model Name", "invalid_request_error", inputFormat);
+      const targetModelId = row.isPrivate === 1 ? modelRow.id : modelRow.name;
 
       // Check Access using the Internal ID (modelRow.id)
       let accessibleModels: string[] = [];
@@ -1239,13 +1426,13 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       // Check Input Token Limit
       let currentInputTokens = 0;
       if (skipRequestConversion) {
-          currentInputTokens = countMessagesTokens(req.body.messages || [], modelId, modelRow.providerType);
+          currentInputTokens = countMessagesTokens(req.body.messages || [], targetModelId, modelRow.providerType);
           if (req.body.system) {
-              currentInputTokens += countContentTokens(req.body.system, modelId, modelRow.providerType);
+              currentInputTokens += countContentTokens(req.body.system, targetModelId, modelRow.providerType);
           }
       } else {
           const messages = body.messages || [];
-          currentInputTokens = countMessagesTokens(messages, modelId, modelRow.providerType);
+          currentInputTokens = countMessagesTokens(messages, targetModelId, modelRow.providerType);
       }
 
       if (row.maxTokenUsage && row.maxTokenUsage > 0) {
@@ -1255,7 +1442,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
       }
 
       if (modelRow.maxInputTokens && currentInputTokens > modelRow.maxInputTokens) {
-        return sendError(res, 400, `Input context length ${currentInputTokens} exceeds the limit of ${modelRow.maxInputTokens} for model '${modelId}'.`, "invalid_request_error", inputFormat);
+        return sendError(res, 400, `Input context length ${currentInputTokens} exceeds the limit of ${modelRow.maxInputTokens} for model '${requestedModelId}'.`, "invalid_request_error", inputFormat);
       }
 
       // --- Key Pool Rotation & Retries ---
@@ -1313,7 +1500,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             let requestBody;
             if (skipRequestConversion) {
-                requestBody = { ...req.body, model: modelRow.id };
+                requestBody = { ...req.body, model: targetModelId };
                 delete requestBody.extended_ttl;
                 // Enforce max output tokens
                 if (modelRow.maxOutputTokens) {
@@ -1330,7 +1517,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                     }
                 }
                 
-                requestBody = { ...body, model: modelRow.id };
+                requestBody = { ...body, model: targetModelId };
                 delete requestBody.extended_ttl;
 
                 if (finalMaxTokens) {
@@ -1342,7 +1529,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 }
 
                 if (isAnthropic) {
-                    requestBody = convertOpenAIToAnthropic(requestBody, modelRow.id);
+                    requestBody = convertOpenAIToAnthropic(requestBody, targetModelId);
                 }
             }
 
@@ -1359,7 +1546,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
                await db.insert(errorLogs).values({
                    tokenId: row.id,
-                   modelId,
+                   modelId: requestedModelId,
                    providerId: modelRow.providerId,
                    errorType: 'provider_error',
                    errorMessage: `Key Index ${keyIndex} - Status ${proxyRes.status}: ${errorText}`,
@@ -1441,7 +1628,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                                         id: "anthropic-msg",
                                                         object: "chat.completion.chunk",
                                                         created: Math.floor(Date.now() / 1000),
-                                                        model: modelId,
+                                                        model: requestedModelId,
                                                         choices: [{ index: 0, delta: { content }, finish_reason: null }]
                                                     };
                                                 } else if (anthropicEvent.type === 'message_stop') {
@@ -1449,7 +1636,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                                         id: "anthropic-msg",
                                                         object: "chat.completion.chunk",
                                                         created: Math.floor(Date.now() / 1000),
-                                                        model: modelId,
+                                                        model: requestedModelId,
                                                         choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
                                                     };
                                                 }
@@ -1523,7 +1710,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                             const inputTokensBase = streamUsage.prompt_tokens || currentInputTokens;
                             const cacheRead = streamUsage.cache_read_input_tokens || 0;
                             const cacheWrite = streamUsage.cache_creation_input_tokens || 0;
-                            const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, modelId, modelRow.providerType);
+                            const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, targetModelId, modelRow.providerType);
                             
                             const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
                             
@@ -1560,7 +1747,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
                             await db.insert(requestLogs).values({
                                 tokenId: row.id,
-                                modelId,
+                                modelId: requestedModelId,
                                 inputTokens: totalInputTokens,
                                 outputTokens,
                                 cacheReadTokens: cacheRead,
@@ -1585,9 +1772,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             try {
                 data = JSON.parse(responseText);
                 if (isAnthropic && inputFormat === 'openai') {
-                    data = convertAnthropicToOpenAI(data, modelId);
+                    data = convertAnthropicToOpenAI(data, requestedModelId);
                 } else if (!isAnthropic && inputFormat === 'anthropic') {
-                    data = convertOpenAIToAnthropicResponse(data, modelId);
+                    data = convertOpenAIToAnthropicResponse(data, requestedModelId);
                 }
             } catch (e) {
                 return sendError(res, 502, "Invalid JSON response from provider", "api_error", inputFormat);
@@ -1606,7 +1793,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
             const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
-            const outputTokens = usage.completion_tokens || usage.output_tokens || countTokens(outputContent, modelId, modelRow.providerType);
+            const outputTokens = usage.completion_tokens || usage.output_tokens || countTokens(outputContent, targetModelId, modelRow.providerType);
             
             const inputPrice = modelRow.inputPricePer1k || 0;
             const outputPrice = modelRow.outputPricePer1k || 0;
@@ -1641,7 +1828,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             await db.insert(requestLogs).values({
                 tokenId: row.id,
-                modelId,
+                modelId: requestedModelId,
                 inputTokens: totalInputTokens,
                 outputTokens,
                 cacheReadTokens: cacheRead,
@@ -1658,7 +1845,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             try {
                 await db.insert(errorLogs).values({
                     tokenId: row.id,
-                    modelId,
+                    modelId: requestedModelId,
                     providerId: modelRow.providerId,
                     errorType: 'server_error',
                     errorMessage: `Key Index ${keyIndex} - ${e.message || String(e)}`,
