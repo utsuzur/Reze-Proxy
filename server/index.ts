@@ -1769,9 +1769,19 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                         res.end();
                         
                         try {
-                            const inputTokensBase = streamUsage.prompt_tokens || currentInputTokens;
-                            const cacheRead = streamUsage.cache_read_input_tokens || 0;
-                            const cacheWrite = streamUsage.cache_creation_input_tokens || 0;
+                            let inputTokensBase: number;
+                            let cacheRead: number;
+                            let cacheWrite: number;
+                            if (isAnthropic) {
+                                inputTokensBase = streamUsage.prompt_tokens || currentInputTokens;
+                                cacheRead = streamUsage.cache_read_input_tokens || 0;
+                                cacheWrite = streamUsage.cache_creation_input_tokens || 0;
+                            } else {
+                                // OpenAI-compatible: prompt_tokens includes cached_tokens
+                                cacheRead = streamUsage.cache_read_input_tokens || 0;
+                                cacheWrite = 0;
+                                inputTokensBase = (streamUsage.prompt_tokens || currentInputTokens) - cacheRead;
+                            }
                             const outputTokens = streamUsage.completion_tokens || countTokens(accumulatedOutput, targetModelId, modelRow.providerType);
                             
                             const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
@@ -1831,8 +1841,11 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             const responseText = await proxyRes.text();
             let data;
+            let rawUsage: any = {};
             try {
                 data = JSON.parse(responseText);
+                // Capture raw usage before any conversion strips cache fields
+                rawUsage = data.usage || {};
                 if (isAnthropic && inputFormat === 'openai') {
                     data = convertAnthropicToOpenAI(data, requestedModelId);
                 } else if (!isAnthropic && inputFormat === 'anthropic') {
@@ -1841,19 +1854,21 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
             } catch (e) {
                 return sendError(res, 502, "Invalid JSON response from provider", "api_error", inputFormat);
             }
-            
-            const usage = data.usage || {};
-            let inputTokensBase = usage.prompt_tokens || currentInputTokens;
-            let cacheRead = usage.cache_read_input_tokens || 0;
-            let cacheWrite = usage.cache_creation_input_tokens || 0;
 
-            if (isAnthropic && inputFormat === 'anthropic') {
-                inputTokensBase = usage.input_tokens || 0;
-                cacheRead = usage.cache_read_input_tokens || 0;
-                cacheWrite = usage.cache_creation_input_tokens || 0;
-            } else if (!isAnthropic) {
-                // OpenAI-compatible providers return cached tokens in prompt_tokens_details
-                cacheRead = usage.prompt_tokens_details?.cached_tokens || 0;
+            let inputTokensBase: number;
+            let cacheRead: number;
+            let cacheWrite: number;
+
+            if (isAnthropic) {
+                // Anthropic: input_tokens excludes cache tokens
+                inputTokensBase = rawUsage.input_tokens || currentInputTokens;
+                cacheRead = rawUsage.cache_read_input_tokens || 0;
+                cacheWrite = rawUsage.cache_creation_input_tokens || 0;
+            } else {
+                // OpenAI-compatible: cached tokens in prompt_tokens_details
+                cacheRead = rawUsage.prompt_tokens_details?.cached_tokens || 0;
+                cacheWrite = 0;
+                inputTokensBase = (rawUsage.prompt_tokens || currentInputTokens) - cacheRead;
             }
 
             const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
