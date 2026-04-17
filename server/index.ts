@@ -1713,6 +1713,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                                 if (json.usage) {
                                                     streamUsage.prompt_tokens = json.usage.prompt_tokens;
                                                     streamUsage.completion_tokens = json.usage.completion_tokens;
+                                                    // OpenAI-compatible cache tokens
+                                                    const cachedTokens = json.usage.prompt_tokens_details?.cached_tokens || 0;
+                                                    if (cachedTokens) streamUsage.cache_read_input_tokens = cachedTokens;
                                                 }
 
                                                 const content = json.choices?.[0]?.delta?.content || "";
@@ -1738,7 +1741,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                     }
                                 } else {
                                     res.write(chunk);
-                                    
+
                                     for (const line of lines) {
                                         if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                                             try {
@@ -1746,6 +1749,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                                                 if (json.usage) {
                                                     streamUsage.prompt_tokens = json.usage.prompt_tokens;
                                                     streamUsage.completion_tokens = json.usage.completion_tokens;
+                                                    // OpenAI-compatible cache tokens
+                                                    const cachedTokens = json.usage.prompt_tokens_details?.cached_tokens || 0;
+                                                    if (cachedTokens) streamUsage.cache_read_input_tokens = cachedTokens;
                                                 }
                                                 if (json.choices?.[0]?.delta?.content) {
                                                     accumulatedOutput += json.choices[0].delta.content;
@@ -1845,6 +1851,9 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                 inputTokensBase = usage.input_tokens || 0;
                 cacheRead = usage.cache_read_input_tokens || 0;
                 cacheWrite = usage.cache_creation_input_tokens || 0;
+            } else if (!isAnthropic) {
+                // OpenAI-compatible providers return cached tokens in prompt_tokens_details
+                cacheRead = usage.prompt_tokens_details?.cached_tokens || 0;
             }
 
             const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
