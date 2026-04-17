@@ -357,6 +357,45 @@ app.post('/api/admin/login', async (req, res) => {
 
 // --- Format Conversion Helpers ---
 
+/**
+ * Injects cache_control: {type: "ephemeral"} at the message at index `depth` from the end
+ * of the messages array (0 = last message, 1 = second-to-last, etc.).
+ * Also handles the system field (pass depth === messages.length to target system).
+ *
+ * Works on Anthropic-format messages (content can be string or array of blocks).
+ */
+function injectCacheControlAtDepth(messages: any[], system: any, depth: number): { messages: any[], system: any } {
+    const clonedMessages = messages.map(m => ({ ...m }));
+    let clonedSystem = system;
+
+    const targetIndex = clonedMessages.length - 1 - depth;
+
+    if (targetIndex >= 0 && targetIndex < clonedMessages.length) {
+        const msg = clonedMessages[targetIndex];
+        if (typeof msg.content === 'string') {
+            msg.content = [{ type: 'text', text: msg.content, cache_control: { type: 'ephemeral' } }];
+        } else if (Array.isArray(msg.content) && msg.content.length > 0) {
+            const blocks = msg.content.map((b: any) => ({ ...b }));
+            const last = { ...blocks[blocks.length - 1], cache_control: { type: 'ephemeral' } };
+            blocks[blocks.length - 1] = last;
+            msg.content = blocks;
+        }
+        clonedMessages[targetIndex] = msg;
+    } else if (targetIndex < 0 && clonedSystem !== undefined) {
+        // depth exceeds messages length — target the system prompt
+        if (typeof clonedSystem === 'string') {
+            clonedSystem = [{ type: 'text', text: clonedSystem, cache_control: { type: 'ephemeral' } }];
+        } else if (Array.isArray(clonedSystem) && clonedSystem.length > 0) {
+            const blocks = clonedSystem.map((b: any) => ({ ...b }));
+            const last = { ...blocks[blocks.length - 1], cache_control: { type: 'ephemeral' } };
+            blocks[blocks.length - 1] = last;
+            clonedSystem = blocks;
+        }
+    }
+
+    return { messages: clonedMessages, system: clonedSystem };
+}
+
 function convertOpenAIToAnthropic(body: any, modelId: string) {
   const { messages, stream, max_tokens, temperature, top_p, stop } = body;
   
@@ -1498,15 +1537,24 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             const isStreaming = body.stream === true;
 
+            const cacheAtDepth = typeof req.body.cacheAtDepth === 'number' ? req.body.cacheAtDepth : undefined;
+
             let requestBody;
             if (skipRequestConversion) {
                 requestBody = { ...req.body, model: targetModelId };
                 delete requestBody.extended_ttl;
+                delete requestBody.cacheAtDepth;
                 // Enforce max output tokens
                 if (modelRow.maxOutputTokens) {
                     if (!requestBody.max_tokens || requestBody.max_tokens > modelRow.maxOutputTokens) {
                         requestBody.max_tokens = modelRow.maxOutputTokens;
                     }
+                }
+                // Inject cache_control at the requested depth
+                if (cacheAtDepth !== undefined && Array.isArray(requestBody.messages)) {
+                    const { messages: cachedMsgs, system: cachedSystem } = injectCacheControlAtDepth(requestBody.messages, requestBody.system, cacheAtDepth);
+                    requestBody.messages = cachedMsgs;
+                    if (cachedSystem !== undefined) requestBody.system = cachedSystem;
                 }
             } else {
                 // Enforce max output tokens
@@ -1516,9 +1564,10 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
                         finalMaxTokens = modelRow.maxOutputTokens;
                     }
                 }
-                
+
                 requestBody = { ...body, model: targetModelId };
                 delete requestBody.extended_ttl;
+                delete requestBody.cacheAtDepth;
 
                 if (finalMaxTokens) {
                     requestBody.max_tokens = finalMaxTokens;
@@ -1530,6 +1579,13 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
                 if (isAnthropic) {
                     requestBody = convertOpenAIToAnthropic(requestBody, targetModelId);
+                }
+
+                // Inject cache_control at the requested depth (works for both Anthropic and OpenAI-compatible providers)
+                if (cacheAtDepth !== undefined && Array.isArray(requestBody.messages)) {
+                    const { messages: cachedMsgs, system: cachedSystem } = injectCacheControlAtDepth(requestBody.messages, requestBody.system, cacheAtDepth);
+                    requestBody.messages = cachedMsgs;
+                    if (cachedSystem !== undefined) requestBody.system = cachedSystem;
                 }
             }
 
