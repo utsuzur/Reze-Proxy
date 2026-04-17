@@ -1873,7 +1873,7 @@ async function handleChatRequest(req: express.Request, res: express.Response, in
 
             const totalInputTokens = inputTokensBase + cacheRead + cacheWrite;
             const outputContent = inputFormat === 'openai' ? (data.choices?.[0]?.message?.content || '') : (data.content?.[0]?.text || '');
-            const outputTokens = usage.completion_tokens || usage.output_tokens || countTokens(outputContent, targetModelId, modelRow.providerType);
+            const outputTokens = rawUsage.completion_tokens || rawUsage.output_tokens || countTokens(outputContent, targetModelId, modelRow.providerType);
             
             const inputPrice = modelRow.inputPricePer1k || 0;
             const outputPrice = modelRow.outputPricePer1k || 0;
